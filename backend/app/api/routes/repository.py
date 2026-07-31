@@ -11,7 +11,13 @@ from app.api.deps import get_current_user
 from app.database.session import get_db
 from app.models.repository import Repository
 from app.models.user import User
-from app.schemas import RepositoryCreate, RepositoryListResponse, RepositoryResponse
+from app.schemas import (
+    RepositoryCreate,
+    RepositoryEmbedRequest,
+    RepositoryEmbedResponse,
+    RepositoryListResponse,
+    RepositoryResponse,
+)
 from app.services.indexing import IndexingService
 
 router = APIRouter(prefix="/repository", tags=["repository"])
@@ -62,6 +68,26 @@ async def create_repository(
     background_tasks.add_task(_index_background, repository.id, body.branch, settings.database_url)
 
     return repository
+
+
+@router.post("/embed", response_model=RepositoryEmbedResponse, status_code=202)
+async def embed_repository(
+    body: RepositoryEmbedRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(get_current_user)],
+):
+    result = await db.execute(
+        select(Repository).where(Repository.id == body.repository_id, Repository.owner_id == user.id)
+    )
+    repository = result.scalar_one_or_none()
+    if not repository:
+        raise HTTPException(status_code=404, detail="Repository not found")
+
+    from app.services.embedding_service import EmbeddingService
+
+    service = EmbeddingService(db)
+    stats = await service.embed_repository(repository.id, body.branch)
+    return stats
 
 
 @router.post("/index", status_code=201)

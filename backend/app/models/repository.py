@@ -38,3 +38,4 @@ class Repository(Base):
     reviews = relationship("Review", back_populates="repository", cascade="all, delete-orphan")
     conversations = relationship("Conversation", back_populates="repository", cascade="all, delete-orphan")
     embeddings = relationship("EmbeddingRecord", back_populates="repository", cascade="all, delete-orphan")
+    file_hashes = relationship("RepositoryFileHash", back_populates="repository", cascade="all, delete-orphan")

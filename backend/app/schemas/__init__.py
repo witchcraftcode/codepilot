@@ -58,6 +58,18 @@ class RepositoryCreate(BaseModel):
     branch: str | None = None
 
 
+class RepositoryEmbedRequest(BaseModel):
+    repository_id: UUID
+    branch: str | None = None
+
+
+class RepositoryEmbedResponse(BaseModel):
+    repository_id: UUID
+    files_indexed: int
+    files_skipped: int
+    vectors_indexed: int
+
+
 class RepositoryResponse(BaseModel):
     id: UUID
     github_url: str
@@ -158,6 +170,32 @@ class ChatResponse(BaseModel):
     conversation_id: UUID
     message: str
     sources: list[ChatSource] = []
+
+
+class ChatContextRequest(BaseModel):
+    repository_id: UUID
+    question: str = Field(..., min_length=1)
+    k: int | None = 5
+    chunk_types: list[str] | None = None
+    language: str | None = None
+
+
+class RetrievedChunk(BaseModel):
+    file_path: str | None = None
+    chunk_type: str | None = None
+    language: str | None = None
+    symbol_name: str | None = None
+    content: str | None = None
+    start_line: int | None = None
+    end_line: int | None = None
+    score: float | None = None
+
+
+class ChatContextResponse(BaseModel):
+    repository_id: UUID
+    question: str
+    retrieved: list[RetrievedChunk]
+    latency_ms: int
 
 
 # --- Specialized endpoints ---

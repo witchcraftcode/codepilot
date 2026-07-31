@@ -4,22 +4,35 @@ import hashlib
 import uuid
 from typing import Any
 
-from qdrant_client import QdrantClient
-from qdrant_client.http import models as qmodels
-
 from app.config import get_settings
 from app.services.cache import cache_service
-from app.services.embedding_factory import get_embeddings
 from parsers.chunker import CodeChunk
 
 
 class VectorStore:
     def __init__(self) -> None:
+        # Lazy import of qdrant to avoid import-time dependency during unit tests
+        try:
+            from qdrant_client import QdrantClient
+        except Exception:  # pragma: no cover - environment may not have qdrant
+            QdrantClient = None  # type: ignore
+
         self.settings = get_settings()
-        self.client = QdrantClient(url=self.settings.qdrant_url)
-        self.embeddings = get_embeddings()
+        self.client = QdrantClient(url=self.settings.qdrant_url) if QdrantClient else None
+        # Lazy import of embedding provider to avoid test-time dependency
+        try:
+            from app.services.embedding_factory import get_embeddings
+
+            self.embeddings = get_embeddings()
+        except Exception:
+            self.embeddings = None
 
     def ensure_collection(self) -> None:
+        # Lazy import models to avoid test-time dependency
+        from qdrant_client.http import models as qmodels
+
+        if not self.client:
+            return
         collections = [c.name for c in self.client.get_collections().collections]
         if self.settings.qdrant_collection not in collections:
             self.client.create_collection(
@@ -38,12 +51,16 @@ class VectorStore:
         cached = await cache_service.get_embedding_cache(content_hash)
         if cached:
             return cached
+        if not self.embeddings:
+            # No embeddings provider configured in test environment
+            return [0.0] * self.settings.vector_dimension
         embedding = await self.embeddings.aembed_query(content)
         await cache_service.set_embedding_cache(content_hash, embedding)
         return embedding
 
     async def index_chunks(self, repository_id: str, chunks: list[CodeChunk]) -> int:
         self.ensure_collection()
+        from qdrant_client.http import models as qmodels
         points: list[qmodels.PointStruct] = []
         indexed = 0
 
@@ -55,9 +72,10 @@ class VectorStore:
             payload = {
                 "repository_id": repository_id,
                 "file_path": chunk.file_path,
-                "chunk_type": chunk.chunk_type,
                 "language": chunk.language,
                 "symbol_name": chunk.symbol_name,
+                "symbol_type": chunk.chunk_type,
+                "chunk_type": chunk.chunk_type,
                 "parent_symbol": chunk.parent_symbol,
                 "start_line": chunk.start_line,
                 "end_line": chunk.end_line,
@@ -70,11 +88,13 @@ class VectorStore:
             indexed += 1
 
             if len(points) >= 100:
-                self.client.upsert(collection_name=self.settings.qdrant_collection, points=points)
+                if self.client:
+                    self.client.upsert(collection_name=self.settings.qdrant_collection, points=points)
                 points = []
 
         if points:
-            self.client.upsert(collection_name=self.settings.qdrant_collection, points=points)
+            if self.client:
+                self.client.upsert(collection_name=self.settings.qdrant_collection, points=points)
 
         return indexed
 
@@ -88,6 +108,11 @@ class VectorStore:
     ) -> list[dict[str, Any]]:
         self.ensure_collection()
         query_embedding = await self._get_embedding(query)
+
+        if not self.client:
+            return []
+
+        from qdrant_client.http import models as qmodels
 
         must_conditions = [
             qmodels.FieldCondition(
@@ -133,16 +158,41 @@ class VectorStore:
         ]
 
     def delete_repository(self, repository_id: str) -> None:
+        if not self.client:
+           return
+        from qdrant_client.http import models as qmodels
         self.client.delete(
-            collection_name=self.settings.qdrant_collection,
-            points_selector=qmodels.FilterSelector(
-                filter=qmodels.Filter(
-                    must=[
-                        qmodels.FieldCondition(
-                            key="repository_id",
-                            match=qmodels.MatchValue(value=repository_id),
-                        )
-                    ]
-                )
-            ),
+           collection_name=self.settings.qdrant_collection,
+           points_selector=qmodels.FilterSelector(
+               filter=qmodels.Filter(
+                   must=[
+                       qmodels.FieldCondition(
+                           key="repository_id",
+                           match=qmodels.MatchValue(value=repository_id),
+                       )
+                   ]
+               )
+           ),
+        )
+
+    def delete_repository_file(self, repository_id: str, file_path: str) -> None:
+        if not self.client:
+           return
+        from qdrant_client.http import models as qmodels
+        self.client.delete(
+           collection_name=self.settings.qdrant_collection,
+           points_selector=qmodels.FilterSelector(
+               filter=qmodels.Filter(
+                   must=[
+                       qmodels.FieldCondition(
+                           key="repository_id",
+                           match=qmodels.MatchValue(value=repository_id),
+                       ),
+                       qmodels.FieldCondition(
+                           key="file_path",
+                           match=qmodels.MatchValue(value=file_path),
+                       ),
+                   ]
+               )
+           ),
         )

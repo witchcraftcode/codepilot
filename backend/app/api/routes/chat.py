@@ -11,11 +11,54 @@ from app.database.session import get_db
 from app.models.feedback import ReviewFeedback
 from app.models.repository import Repository
 from app.models.user import User
-from app.schemas import ChatRequest, ChatResponse, FeedbackCreate, HealthScoreBreakdown, ScoresResponse
+from app.schemas import (
+    ChatRequest,
+    ChatResponse,
+    FeedbackCreate,
+    HealthScoreBreakdown,
+    ScoresResponse,
+    ChatContextRequest,
+    ChatContextResponse,
+)
 from app.services.chat_service import ChatService
+from app.services.retrieval_service import RetrievalService
 from sqlalchemy import select
 
 router = APIRouter(tags=["chat"])
+
+
+@router.post("/context", response_model=ChatContextResponse)
+async def retrieve_context(
+    body: ChatContextRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    user: Annotated[User, Depends(get_current_user)],
+):
+    # validate repository ownership
+    result = await db.execute(select(Repository).where(Repository.id == body.repository_id, Repository.owner_id == user.id))
+    repo = result.scalar_one_or_none()
+    if not repo:
+        raise HTTPException(status_code=404, detail="Repository not found")
+
+    service = RetrievalService()
+    data = await service.retrieve(body.repository_id, body.question, k=body.k or 5, chunk_types=body.chunk_types, language=body.language)
+
+    retrieved = []
+    for r in data["retrieved"]:
+        retrieved.append(
+            {
+                "file_path": r.get("file_path"),
+                "chunk_type": r.get("chunk_type"),
+                "language": r.get("language"),
+                "symbol_name": r.get("symbol_name"),
+                "content": r.get("content"),
+                "start_line": r.get("start_line"),
+                "end_line": r.get("end_line"),
+                "score": r.get("score"),
+            }
+        )
+
+    return ChatContextResponse(repository_id=body.repository_id, question=body.question, retrieved=retrieved, latency_ms=data["latency_ms"])
+
 
 
 @router.post("/chat", response_model=ChatResponse)
