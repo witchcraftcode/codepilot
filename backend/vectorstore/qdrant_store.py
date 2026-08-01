@@ -7,7 +7,7 @@ import logging
 from typing import Any
 
 from app.config import get_settings
-from app.services.cache import cache_service
+from app.services.observability import record_qdrant, trace_span
 from parsers.chunker import CodeChunk
 
 logger = logging.getLogger(__name__)
@@ -32,11 +32,11 @@ class VectorStore:
             self.embedding_client = None
 
     def ensure_collection(self) -> None:
+        if not self.client:
+            return
         # Lazy import models to avoid test-time dependency
         from qdrant_client.http import models as qmodels
 
-        if not self.client:
-            return
         collections = [c.name for c in self.client.get_collections().collections]
         if self.settings.qdrant_collection not in collections:
             self.client.create_collection(
@@ -58,13 +58,12 @@ class VectorStore:
         batches to reduce overhead.
         """
         self.ensure_collection()
-        from qdrant_client.http import models as qmodels
 
         # Filter out very small chunks and prepare payloads
         items = []  # tuples of (chunk, content)
         for chunk in chunks:
             content = chunk.content.strip()
-            if len(content) < 10:
+            if not content or (len(content) < 10 and content.startswith("#")):
                 continue
             items.append((chunk, content))
 
@@ -82,6 +81,11 @@ class VectorStore:
                     getattr(self.settings, "embedding_provider", None),
                     len(embeddings),
                     elapsed)
+
+        if not self.client:
+            return len(items)
+
+        from qdrant_client.http import models as qmodels
 
         points: list[qmodels.PointStruct] = []
         indexed = 0
@@ -105,11 +109,17 @@ class VectorStore:
             # Flush to Qdrant in moderate sized batches
             if len(points) >= 256:
                 if self.client:
-                    self.client.upsert(collection_name=self.settings.qdrant_collection, points=points)
+                    start = time.perf_counter()
+                    with trace_span("qdrant.upsert", operation="upsert", points=len(points)):
+                        self.client.upsert(collection_name=self.settings.qdrant_collection, points=points)
+                    record_qdrant("upsert", int((time.perf_counter() - start) * 1000))
                 points = []
 
         if points and self.client:
-            self.client.upsert(collection_name=self.settings.qdrant_collection, points=points)
+            start = time.perf_counter()
+            with trace_span("qdrant.upsert", operation="upsert", points=len(points)):
+                self.client.upsert(collection_name=self.settings.qdrant_collection, points=points)
+            record_qdrant("upsert", int((time.perf_counter() - start) * 1000))
 
         logger.info("vectors_indexed: repository=%s provider=%s vectors=%d",
                     repository_id,
@@ -128,7 +138,11 @@ class VectorStore:
     ) -> list[dict[str, Any]]:
         self.ensure_collection()
         # Reuse embedding client to get query embedding
-        query_embedding = await (self.embedding_client.embed_batch([query])[0] if self.embedding_client else [0.0] * self.settings.vector_dimension)
+        if self.embedding_client:
+            embeddings = await self.embedding_client.embed_batch([query])
+            query_embedding = embeddings[0]
+        else:
+            query_embedding = [0.0] * self.settings.vector_dimension
 
         if not self.client:
             return []
@@ -156,13 +170,16 @@ class VectorStore:
                 )
             )
 
-        results = self.client.search(
-            collection_name=self.settings.qdrant_collection,
-            query_vector=query_embedding,
-            query_filter=qmodels.Filter(must=must_conditions),
-            limit=limit,
-            with_payload=True,
-        )
+        start = time.perf_counter()
+        with trace_span("qdrant.search", operation="search", repository_id=repository_id, limit=limit):
+            results = self.client.search(
+                collection_name=self.settings.qdrant_collection,
+                query_vector=query_embedding,
+                query_filter=qmodels.Filter(must=must_conditions),
+                limit=limit,
+                with_payload=True,
+            )
+        record_qdrant("search", int((time.perf_counter() - start) * 1000))
 
         return [
             {

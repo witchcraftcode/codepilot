@@ -2,7 +2,6 @@
 
 import os
 import sys
-import time
 from typing import Any, Dict, List
 from uuid import UUID
 
@@ -29,6 +28,7 @@ from app.config import get_settings
 from app.models.repository import Repository
 from app.services.hybrid_retrieval import HybridRetrievalService
 from app.services.llm_factory import get_llm
+from app.services.observability import extract_token_usage, measured_llm_ainvoke
 from evaluation.ragas_eval import (
     EvaluationReport,
     build_context,
@@ -187,23 +187,13 @@ class EvaluationService:
 
     async def _invoke_llm(self, messages: List[Any]) -> tuple[str, int, int]:
         llm = get_llm(temperature=0.0, max_tokens=512)
-        start = time.perf_counter()
-        resp = await llm.ainvoke(messages)
-        latency_ms = int((time.perf_counter() - start) * 1000)
+        resp, latency_ms, tokens, _ = await measured_llm_ainvoke(llm, messages, operation="evaluation")
         content = getattr(resp, "content", str(resp))
-        tokens = self._extract_token_usage(resp)
+        tokens = tokens or self._extract_token_usage(resp)
         return str(content), latency_ms, tokens
 
     def _extract_token_usage(self, response: Any) -> int:
-        if hasattr(response, "token_usage") and isinstance(response.token_usage, int):
-            return response.token_usage
-        if hasattr(response, "usage"):
-            usage = response.usage
-            if isinstance(usage, dict):
-                return int(usage.get("total_tokens", 0) or 0)
-            if isinstance(usage, int):
-                return usage
-        return 0
+        return extract_token_usage(response)
 
     def _get_memory_usage_mb(self) -> float:
         try:

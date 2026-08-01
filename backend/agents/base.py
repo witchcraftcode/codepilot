@@ -18,6 +18,7 @@ except Exception:
             self.content = content
 
 from app.services.llm_factory import get_llm
+from app.services.observability import extract_token_usage, measured_llm_ainvoke
 from graph.state import AgentFinding, AgentResult, ReviewState
 from vectorstore.qdrant_store import VectorStore
 
@@ -126,7 +127,7 @@ Respond with JSON only:
         ]
 
         await self._ensure_llm()
-        response = await self._llm.ainvoke(messages)
+        response, _, observed_tokens, _ = await measured_llm_ainvoke(self._llm, messages, operation=f"agent.{self.name}")
         duration_ms = int((time.time() - start) * 1000)
 
         try:
@@ -158,8 +159,7 @@ Respond with JSON only:
                 )
             )
 
-        tokens = getattr(response, "usage_metadata", {})
-        tokens_used = tokens.get("total_tokens", 0) if tokens else len(str(response.content)) // 4
+        tokens_used = observed_tokens or extract_token_usage(response) or len(str(response.content)) // 4
 
         return AgentResult(
             agent_name=self.name,

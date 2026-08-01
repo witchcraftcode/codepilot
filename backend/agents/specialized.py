@@ -2,6 +2,7 @@
 
 from agents.base import BaseAgent
 from agents.planner import plan_agents
+from app.services.observability import measured_llm_ainvoke
 
 
 import json
@@ -103,7 +104,7 @@ class PlannerAgent(BaseAgent):
             messages = [SystemMessage(content=self.get_system_prompt()), HumanMessage(content=prompt)]
 
             try:
-                resp = await llm.ainvoke(messages)
+                resp, _, _, _ = await measured_llm_ainvoke(llm, messages, operation="agent.planner")
                 text = getattr(resp, "content", str(resp))
                 # attempt to extract JSON block
                 if "```json" in text:
@@ -1309,7 +1310,7 @@ Respond with JSON:
             ),
         ]
 
-        response = await self._llm.ainvoke(messages)
+        response, _, _, _ = await measured_llm_ainvoke(self._llm, messages, operation="agent.summary")
         import json
 
         try:

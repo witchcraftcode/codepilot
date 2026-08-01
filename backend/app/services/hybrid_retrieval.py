@@ -23,11 +23,11 @@ import re
 import statistics
 import time
 from collections import Counter
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 from uuid import UUID
 
 from app.config import get_settings
-from typing import Any
+from app.services.observability import record_retrieval, trace_span
 
 from vectorstore.qdrant_store import VectorStore
 
@@ -93,8 +93,10 @@ class SemanticRetriever:
 
     async def retrieve(self, repository_id: str, query: str, k: int = 10, chunk_types: Optional[List[str]] = None, language: Optional[str] = None, metadata_filter: Optional[Dict[str, Any]] = None) -> Tuple[List[Dict[str, Any]], int]:
         start = time.perf_counter()
-        results = await self.vector_store.search(query=query, repository_id=repository_id, limit=k, chunk_types=chunk_types, language=language)
+        with trace_span("retrieval.semantic", repository_id=repository_id, limit=k):
+            results = await self.vector_store.search(query=query, repository_id=repository_id, limit=k, chunk_types=chunk_types, language=language)
         elapsed_ms = int((time.perf_counter() - start) * 1000)
+        record_retrieval("semantic", elapsed_ms)
         return results, elapsed_ms
 
 
@@ -149,10 +151,11 @@ class KeywordRetriever:
 
     async def retrieve(self, repository_id: UUID, query: str, top_n: int = 50, language: Optional[str] = None, metadata_filter: Optional[Dict[str, Any]] = None) -> Tuple[List[Dict[str, Any]], int]:
         start = time.perf_counter()
-        corpus = await self._load_corpus(repository_id, language=language, metadata_filter=metadata_filter)
-        docs = [d["content"] or "" for d in corpus]
-        bm25 = BM25Okapi(docs)
-        top = bm25.get_top_n(query, n=top_n)
+        with trace_span("retrieval.keyword", repository_id=str(repository_id), limit=top_n):
+            corpus = await self._load_corpus(repository_id, language=language, metadata_filter=metadata_filter)
+            docs = [d["content"] or "" for d in corpus]
+            bm25 = BM25Okapi(docs)
+            top = bm25.get_top_n(query, n=top_n)
         results = []
         for idx, score in top:
             entry = corpus[idx]
@@ -160,6 +163,7 @@ class KeywordRetriever:
             entry["bm25_score"] = score
             results.append(entry)
         elapsed_ms = int((time.perf_counter() - start) * 1000)
+        record_retrieval("keyword", elapsed_ms)
         return results, elapsed_ms
 
 
@@ -177,28 +181,30 @@ class CrossEncoderReranker:
 
     async def rerank(self, query: str, candidates: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], int]:
         start = time.perf_counter()
-        # normalize scores
-        sem_scores = [c.get("score") or c.get("semantic_score") or 0.0 for c in candidates]
-        bm25_scores = [c.get("bm25_score") or 0.0 for c in candidates]
+        with trace_span("retrieval.rerank", candidates=len(candidates)):
+            # normalize scores
+            sem_scores = [c.get("score") or c.get("semantic_score") or 0.0 for c in candidates]
+            bm25_scores = [c.get("bm25_score") or 0.0 for c in candidates]
 
-        max_sem = max(sem_scores) if sem_scores else 1.0
-        max_bm = max(bm25_scores) if bm25_scores else 1.0
+            max_sem = max(sem_scores) if sem_scores else 1.0
+            max_bm = max(bm25_scores) if bm25_scores else 1.0
 
-        reranked = []
-        q_tokens = set(tokenize(query))
-        for c, s, b in zip(candidates, sem_scores, bm25_scores):
-            norm_s = s / max_sem if max_sem else 0.0
-            norm_b = b / max_bm if max_bm else 0.0
-            # term overlap as small additional signal
-            cont_tokens = set(tokenize(c.get("content") or ""))
-            overlap = len(q_tokens & cont_tokens) / (len(q_tokens) or 1)
-            score = self.alpha * norm_s + self.beta * norm_b + 0.05 * overlap
-            new = dict(c)
-            new["rerank_score"] = score
-            reranked.append(new)
+            reranked = []
+            q_tokens = set(tokenize(query))
+            for c, s, b in zip(candidates, sem_scores, bm25_scores):
+                norm_s = s / max_sem if max_sem else 0.0
+                norm_b = b / max_bm if max_bm else 0.0
+                # term overlap as small additional signal
+                cont_tokens = set(tokenize(c.get("content") or ""))
+                overlap = len(q_tokens & cont_tokens) / (len(q_tokens) or 1)
+                score = self.alpha * norm_s + self.beta * norm_b + 0.05 * overlap
+                new = dict(c)
+                new["rerank_score"] = score
+                reranked.append(new)
 
-        reranked.sort(key=lambda x: x["rerank_score"], reverse=True)
+            reranked.sort(key=lambda x: x["rerank_score"], reverse=True)
         elapsed_ms = int((time.perf_counter() - start) * 1000)
+        record_retrieval("rerank", elapsed_ms)
         return reranked, elapsed_ms
 
 
@@ -227,11 +233,12 @@ class HybridRetrievalService:
 
         overall_start = time.perf_counter()
 
-        # Semantic retrieval
-        sem_results, sem_latency_ms = await self.semantic.retrieve(repository_id=repo_id_str, query=query, k=semantic_k, chunk_types=chunk_types, language=language, metadata_filter=metadata_filter)
+        with trace_span("retrieval.hybrid", repository_id=repo_id_str, top_k=top_k):
+            # Semantic retrieval
+            sem_results, sem_latency_ms = await self.semantic.retrieve(repository_id=repo_id_str, query=query, k=semantic_k, chunk_types=chunk_types, language=language, metadata_filter=metadata_filter)
 
-        # Keyword retrieval
-        kw_results, kw_latency_ms = await self.keyword.retrieve(repository_id=repository_id, query=query, top_n=keyword_k, language=language, metadata_filter=metadata_filter)
+            # Keyword retrieval
+            kw_results, kw_latency_ms = await self.keyword.retrieve(repository_id=repository_id, query=query, top_n=keyword_k, language=language, metadata_filter=metadata_filter)
 
         # Create candidate map keyed by content_hash or id
         cand_map: Dict[str, Dict[str, Any]] = {}
@@ -268,6 +275,7 @@ class HybridRetrievalService:
         top = reranked[:top_k]
 
         overall_latency_ms = int((time.perf_counter() - overall_start) * 1000)
+        record_retrieval("hybrid_total", overall_latency_ms)
 
         # Build response
         response = {

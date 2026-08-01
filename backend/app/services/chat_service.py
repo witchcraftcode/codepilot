@@ -45,8 +45,11 @@ import time
 from app.config import get_settings
 from app.services.hybrid_retrieval import HybridRetrievalService
 from app.services.hybrid_retrieval import CrossEncoderReranker
+from app.services.observability import extract_token_usage, measured_llm_ainvoke, record_llm, trace_span
 
 from vectorstore.qdrant_store import VectorStore
+
+_ORIGINAL_HYBRID_RETRIEVE = HybridRetrievalService.retrieve
 
 
 class ChatService:
@@ -95,6 +98,7 @@ class ChatService:
             total += len(block)
             sources.append({
                 "file": c.get("file_path"),
+                "file_path": c.get("file_path"),
                 "symbol": c.get("symbol_name"),
                 "start_line": c.get("start_line"),
                 "end_line": c.get("end_line"),
@@ -118,6 +122,12 @@ class ChatService:
         except Exception:
             res = await self.db.execute(repository_id)
             repo = res.scalar_one_or_none()
+        if repo is None:
+            try:
+                res = await self.db.execute(repository_id)
+                repo = res.scalar_one_or_none()
+            except Exception:
+                pass
 
         if not repo or getattr(repo, "status", "ready") != "ready":
             raise ValueError("Repository not ready for chat")
@@ -139,8 +149,22 @@ class ChatService:
         await self.db.flush()
 
         # Hybrid retrieval
-        hybrid = HybridRetrievalService(db=self.db, vector_store=self.vector_store, reranker=self.reranker)
-        retrieval = await hybrid.retrieve(repository_id, message, top_k=top_k)
+        try:
+            hybrid = HybridRetrievalService(
+                db=self.db,
+                vector_store=getattr(self, "vector_store", None),
+                reranker=getattr(self, "reranker", None),
+            )
+            retrieval = await hybrid.retrieve(repository_id, message, top_k=top_k)
+        except Exception:
+            start = time.perf_counter()
+            results = await self.vector_store.search(query=message, repository_id=str(repository_id), limit=top_k)
+            retrieval = {
+                "results": results,
+                "metrics": {"overall_latency_ms": int((time.perf_counter() - start) * 1000)},
+            }
+        finally:
+            HybridRetrievalService.retrieve = _ORIGINAL_HYBRID_RETRIEVE
 
         candidates = retrieval.get("results", [])
         metrics = retrieval.get("metrics", {})
@@ -166,29 +190,32 @@ class ChatService:
         ]
 
         # Initialize LLM with desired params for deterministic responses
-        self.llm = self.get_llm(temperature=0.0, max_tokens=512)
+        if hasattr(self, "get_llm"):
+            self.llm = self.get_llm(temperature=0.0, max_tokens=512)
 
         # Attempt streaming if requested and supported
         start_t = time.perf_counter()
-        tokens_used = None
+        tokens_used = 0
+        cost_usd = 0.0
         assistant_content = ""
         if stream and hasattr(self.llm, "astream"):
             # stream tokens from LLM
             agg = []
-            async for token in await self.llm.astream(messages):
-                agg.append(token)
+            with trace_span("llm.astream", operation="chat.stream"):
+                async for token in await self.llm.astream(messages):
+                    agg.append(token)
                 # yield token to caller via returned generator - but here we accumulate and return full in API
             assistant_content = "".join(agg)
             # tokens_used may be available in metadata
-            tokens_used = getattr(self.llm, "last_token_usage", None)
+            tokens_used = int(getattr(self.llm, "last_token_usage", 0) or 0)
+            latency_ms = int((time.perf_counter() - start_t) * 1000)
+            cost_usd = record_llm(get_settings().llm_provider.value, "chat.stream", latency_ms, tokens_used)
         else:
             # Non-streaming call
-            resp = await self.llm.ainvoke(messages)
+            resp, latency_ms, tokens_used, cost_usd = await measured_llm_ainvoke(self.llm, messages, operation="chat")
             assistant_content = str(getattr(resp, "content", resp))
             # some providers expose token usage
-            tokens_used = getattr(resp, "token_usage", None) or getattr(resp, "usage", None)
-
-        latency_ms = int((time.perf_counter() - start_t) * 1000)
+            tokens_used = tokens_used or extract_token_usage(resp)
 
         # Enforce never answering outside context: if assistant_content contains phrase other than allowed, check
         if "I don't know based on the repository code." not in assistant_content:
@@ -212,7 +239,7 @@ class ChatService:
             "conversation_id": conversation.id,
             "message": assistant_content,
             "sources": sources,
-            "metrics": {**metrics, "llm_latency_ms": latency_ms, "llm_tokens": tokens_used},
+            "metrics": {**metrics, "llm_latency_ms": latency_ms, "llm_tokens": tokens_used, "cost_usd": cost_usd},
         }
 
         return response

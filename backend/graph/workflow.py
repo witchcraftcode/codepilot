@@ -71,6 +71,18 @@ from agents.specialized import (
 )
 from graph.state import ReviewState
 
+try:
+    from app.services.observability import record_agent_execution, trace_span
+except Exception:  # pragma: no cover - graph tests can run without full app deps
+    def record_agent_execution(node: str, duration_ms: float) -> None:
+        return None
+
+    from contextlib import contextmanager
+
+    @contextmanager
+    def trace_span(name: str, **attributes):
+        yield None
+
 AGENT_NODES = {
     "repository": (RepositoryAgent, "repository_result"),
     "architecture": (ArchitectureAgent, "architecture_result"),
@@ -96,26 +108,13 @@ EXECUTION_ORDER = [
 
 
 async def planner_node(state: ReviewState) -> dict[str, Any]:
-    try:
-        from opentelemetry import trace
-        tracer = trace.get_tracer(__name__)
-    except Exception:
-        class _DummyTracer:
-            def start_as_current_span(self, name):
-                class _S:
-                    def __enter__(self):
-                        return self
-
-                    def __exit__(self, exc_type, exc, tb):
-                        return False
-
-                return _S()
-
-        tracer = _DummyTracer()
-
+    start = time.perf_counter()
     planner = PlannerAgent()
-    with tracer.start_as_current_span("planner_node"):
-        plan = await planner.plan(state)
+    with trace_span("langgraph.node", node="planner"):
+        try:
+            plan = await planner.plan(state)
+        finally:
+            record_agent_execution("planner", int((time.perf_counter() - start) * 1000))
 
     # plan may be dict or list
     if isinstance(plan, dict):
@@ -132,37 +131,47 @@ async def planner_node(state: ReviewState) -> dict[str, Any]:
 
 def make_agent_node(agent_name: str):
     async def node(state: ReviewState) -> dict[str, Any]:
-        if agent_name not in state.get("agents_to_run", []):
-            return {}
-        agent_cls, result_key = AGENT_NODES[agent_name]
-        agent = agent_cls()
-        result = await agent.run(state)
-        return {
-            result_key: result,
-            "total_tokens": state.get("total_tokens", 0) + result["tokens_used"],
-        }
+        start = time.perf_counter()
+        with trace_span("langgraph.node", node=agent_name):
+            try:
+                if agent_name not in state.get("agents_to_run", []):
+                    return {}
+                agent_cls, result_key = AGENT_NODES[agent_name]
+                agent = agent_cls()
+                result = await agent.run(state)
+                return {
+                    result_key: result,
+                    "total_tokens": state.get("total_tokens", 0) + result["tokens_used"],
+                }
+            finally:
+                record_agent_execution(agent_name, int((time.perf_counter() - start) * 1000))
 
     return node
 
 
 async def summary_node(state: ReviewState) -> dict[str, Any]:
-    if "summary" not in state.get("agents_to_run", []):
-        return {}
-    summary_agent = SummaryAgent()
-    agent_results = []
-    for name, (_, result_key) in AGENT_NODES.items():
-        result = state.get(result_key)
-        if result:
-            agent_results.append(result)
+    start = time.perf_counter()
+    with trace_span("langgraph.node", node="summary"):
+        try:
+            if "summary" not in state.get("agents_to_run", []):
+                return {}
+            summary_agent = SummaryAgent()
+            agent_results = []
+            for name, (_, result_key) in AGENT_NODES.items():
+                result = state.get(result_key)
+                if result:
+                    agent_results.append(result)
 
-    summary = await summary_agent.summarize(state, agent_results)
-    return {
-        "overall_score": summary.get("overall_score"),
-        "summary": summary.get("summary"),
-        "top_issues": summary.get("top_issues", []),
-        "priority_fixes": summary.get("priority_fixes", []),
-        "roadmap": summary.get("roadmap", []),
-    }
+            summary = await summary_agent.summarize(state, agent_results)
+            return {
+                "overall_score": summary.get("overall_score"),
+                "summary": summary.get("summary"),
+                "top_issues": summary.get("top_issues", []),
+                "priority_fixes": summary.get("priority_fixes", []),
+                "roadmap": summary.get("roadmap", []),
+            }
+        finally:
+            record_agent_execution("summary", int((time.perf_counter() - start) * 1000))
 
 
 def route_next(current: str):

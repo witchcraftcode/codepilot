@@ -16,6 +16,7 @@ from typing import List, Tuple
 
 from app.config import get_settings
 from app.services.cache import cache_service
+from app.services.observability import record_cache, record_embedding, trace_span
 
 logger = logging.getLogger(__name__)
 
@@ -46,15 +47,19 @@ class EmbeddingClient:
 
         # First, compute hashes and consult cache
         hashes = [_content_hash(t) for t in texts]
-        cached_tasks = [cache_service.get_embedding_cache(h) for h in hashes]
-        cached_results = await asyncio.gather(*cached_tasks)
+        cache_keys = [f"emb:{h}" for h in hashes]
+        with trace_span("embedding.cache_lookup", count=len(texts)):
+            cached_tasks = [cache_service.get_embedding_cache(key) for key in cache_keys]
+            cached_results = await asyncio.gather(*cached_tasks)
 
         results: List[List[float] | None] = [None] * len(texts)
         to_request: List[Tuple[int, str]] = []  # (index, text)
         for i, cached in enumerate(cached_results):
             if cached:
+                record_cache("embedding", True)
                 results[i] = cached
             else:
+                record_cache("embedding", False)
                 to_request.append((i, texts[i]))
 
         if not to_request:
@@ -77,10 +82,12 @@ class EmbeddingClient:
             attempt = 0
             while True:
                 attempt += 1
-                start = time.time()
+                start = time.perf_counter()
                 try:
-                    provider_embeddings = await self._call_provider(list(strs))
-                    latency = time.time() - start
+                    with trace_span("embedding.provider", provider=str(self.settings.embedding_provider.value), count=len(strs)):
+                        provider_embeddings = await self._call_provider(list(strs))
+                    latency = time.perf_counter() - start
+                    record_embedding(str(self.settings.embedding_provider.value), "embed_batch", latency * 1000)
                     logger.info(
                         "embedding_batch: provider=%s batch_size=%d latency=%.3fs provider_model=%s",
                         self.settings.embedding_provider.value if getattr(self.settings, "embedding_provider", None) else None,
@@ -92,7 +99,7 @@ class EmbeddingClient:
                     # store in cache and fill results
                     for idx, emb in zip(indices, provider_embeddings):
                         results[idx] = emb
-                        await cache_service.set_embedding_cache(hashes[idx], emb)
+                        await cache_service.set_embedding_cache(cache_keys[idx], emb)
                     break
                 except Exception as exc:  # pragma: no cover - network/provider errors
                     if attempt > max_retries:

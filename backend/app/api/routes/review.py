@@ -26,6 +26,7 @@ from app.schemas import (
     SecurityAuditRequest,
     TestGenerationRequest,
 )
+from app.services.observability import measured_llm_ainvoke
 from app.services.review_service import ReviewService
 
 router = APIRouter(tags=["review"])
@@ -216,10 +217,10 @@ async def generate_tests(
     from langchain_core.messages import HumanMessage, SystemMessage
 
     framework = body.framework or "pytest"
-    response = await llm.ainvoke([
+    response, _, _, _ = await measured_llm_ainvoke(llm, [
         SystemMessage(content=f"You are a test generation expert. Generate {framework} unit tests."),
         HumanMessage(content=f"Generate tests for:\n{context}"),
-    ])
+    ], operation="review.generate_tests")
     return {"tests": str(response.content), "framework": framework}
 
 
@@ -240,10 +241,10 @@ async def generate_documentation(
     llm = get_llm()
     from langchain_core.messages import HumanMessage, SystemMessage
 
-    response = await llm.ainvoke([
+    response, _, _, _ = await measured_llm_ainvoke(llm, [
         SystemMessage(content=f"Generate {body.target} documentation for this codebase."),
         HumanMessage(content=context),
-    ])
+    ], operation="review.documentation")
     return {"documentation": str(response.content), "target": body.target}
 
 
@@ -267,10 +268,10 @@ async def explain_function(
     llm = get_llm()
     from langchain_core.messages import HumanMessage, SystemMessage
 
-    response = await llm.ainvoke([
+    response, _, _, _ = await measured_llm_ainvoke(llm, [
         SystemMessage(content="Explain this function: purpose, inputs, outputs, complexity, and edge cases."),
         HumanMessage(content=f"Function: {body.function_name}\nFile: {body.file_path}\n\n{context}"),
-    ])
+    ], operation="review.explain")
     return {"explanation": str(response.content)}
 
 
@@ -284,8 +285,8 @@ async def review_pull_request(
     from langchain_core.messages import HumanMessage, SystemMessage
 
     llm = get_llm()
-    response = await llm.ainvoke([
+    response, _, _, _ = await measured_llm_ainvoke(llm, [
         SystemMessage(content="Review this pull request diff. Identify bugs, security issues, style problems, and suggest improvements."),
         HumanMessage(content=f"Title: {body.pr_title}\nDescription: {body.pr_description}\n\nDiff:\n{body.pr_diff[:8000]}"),
-    ])
+    ], operation="review.pr_review")
     return {"review": str(response.content)}

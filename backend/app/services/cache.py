@@ -41,10 +41,12 @@ class CacheService:
         await self.client.delete(key)
 
     async def get_embedding_cache(self, content_hash: str) -> list[float] | None:
-        return await self.get(f"emb:{content_hash}")
+        key = content_hash if content_hash.startswith("emb:") else f"emb:{content_hash}"
+        return await self.get(key)
 
     async def set_embedding_cache(self, content_hash: str, embedding: list[float]) -> None:
-        await self.set(f"emb:{content_hash}", embedding, ttl=86400 * 7)
+        key = content_hash if content_hash.startswith("emb:") else f"emb:{content_hash}"
+        await self.set(key, embedding, ttl=86400 * 7)
 
     async def get_agent_memory(self, review_id: str, agent_name: str) -> dict | None:
         return await self.get(f"agent_mem:{review_id}:{agent_name}")
