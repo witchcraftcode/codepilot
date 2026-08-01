@@ -2,7 +2,12 @@
 
 from typing import Annotated, Any, TypedDict
 
-from langgraph.graph.message import add_messages
+try:
+    from langgraph.graph.message import add_messages
+except Exception:
+    # Fallback no-op decorator when langgraph is not available in test env
+    def add_messages(x):
+        return x
 
 
 class AgentFinding(TypedDict):
@@ -57,7 +62,8 @@ class ReviewState(TypedDict):
     priority_fixes: list[dict[str, Any]]
     roadmap: list[dict[str, Any]]
 
-    # Metrics
+    # Progress and metrics
+    progress_updates: list[dict[str, Any]]
     total_tokens: int
     messages: Annotated[list, add_messages]
     errors: list[str]

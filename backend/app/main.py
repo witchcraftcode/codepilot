@@ -8,6 +8,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import auth, chat, repository, review
+from app.api.routes.evaluation import router as evaluation_router
 from app.config import get_settings
 from app.database.session import Base, engine
 from app.logging_config import REQUEST_ID_HEADER, configure_logging, request_id_ctx
@@ -64,6 +65,7 @@ def create_app() -> FastAPI:
     app.include_router(repository.router, prefix=prefix)
     app.include_router(review.router, prefix=prefix)
     app.include_router(chat.router, prefix=prefix)
+    app.include_router(evaluation_router, prefix=prefix)
 
     @app.get("/health")
     async def health():

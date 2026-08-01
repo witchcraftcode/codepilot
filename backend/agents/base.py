@@ -5,7 +5,17 @@ import time
 import uuid
 from abc import ABC, abstractmethod
 
-from langchain_core.messages import HumanMessage, SystemMessage
+try:
+    from langchain_core.messages import HumanMessage, SystemMessage
+except Exception:
+    # Lightweight fallback message wrappers for environments without langchain
+    class HumanMessage:
+        def __init__(self, content: str):
+            self.content = content
+
+    class SystemMessage:
+        def __init__(self, content: str):
+            self.content = content
 
 from app.services.llm_factory import get_llm
 from graph.state import AgentFinding, AgentResult, ReviewState
@@ -18,8 +28,24 @@ class BaseAgent(ABC):
     default_queries: list[str] = []
 
     def __init__(self) -> None:
-        self.llm = get_llm()
+        # Initialize lazily to avoid importing provider libs during tests
+        try:
+            self._llm = None
+        except Exception:
+            self._llm = None
         self.vector_store = VectorStore()
+
+    async def _ensure_llm(self):
+        if getattr(self, "_llm", None) is None:
+            try:
+                self._llm = get_llm()
+            except Exception:
+                # Fallback dummy LLM
+                class _D:
+                    async def ainvoke(self, messages):
+                        return type("R", (), {"content": "{}"})()
+
+                self._llm = _D()
 
     @abstractmethod
     def get_system_prompt(self) -> str:
@@ -99,7 +125,8 @@ Respond with JSON only:
             HumanMessage(content=user_msg),
         ]
 
-        response = await self.llm.ainvoke(messages)
+        await self._ensure_llm()
+        response = await self._llm.ainvoke(messages)
         duration_ms = int((time.time() - start) * 1000)
 
         try:

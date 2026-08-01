@@ -2,11 +2,15 @@
 
 import hashlib
 import uuid
+import time
+import logging
 from typing import Any
 
 from app.config import get_settings
 from app.services.cache import cache_service
 from parsers.chunker import CodeChunk
+
+logger = logging.getLogger(__name__)
 
 
 class VectorStore:
@@ -19,13 +23,13 @@ class VectorStore:
 
         self.settings = get_settings()
         self.client = QdrantClient(url=self.settings.qdrant_url) if QdrantClient else None
-        # Lazy import of embedding provider to avoid test-time dependency
+        # Use the new EmbeddingClient wrapper for batching, caching and retries
         try:
-            from app.services.embedding_factory import get_embeddings
+            from app.services.embedding_client import EmbeddingClient
 
-            self.embeddings = get_embeddings()
+            self.embedding_client = EmbeddingClient()
         except Exception:
-            self.embeddings = None
+            self.embedding_client = None
 
     def ensure_collection(self) -> None:
         # Lazy import models to avoid test-time dependency
@@ -46,28 +50,43 @@ class VectorStore:
     def _content_hash(self, content: str) -> str:
         return hashlib.sha256(content.encode()).hexdigest()
 
-    async def _get_embedding(self, content: str) -> list[float]:
-        content_hash = self._content_hash(content)
-        cached = await cache_service.get_embedding_cache(content_hash)
-        if cached:
-            return cached
-        if not self.embeddings:
-            # No embeddings provider configured in test environment
-            return [0.0] * self.settings.vector_dimension
-        embedding = await self.embeddings.aembed_query(content)
-        await cache_service.set_embedding_cache(content_hash, embedding)
-        return embedding
-
     async def index_chunks(self, repository_id: str, chunks: list[CodeChunk]) -> int:
+        """Index multiple code chunks in Qdrant using batched embeddings.
+
+        This implementation batches embeddings across chunks, uses Redis cache for
+        embeddings, logs latency and vector counts, and upserts points in Qdrant in
+        batches to reduce overhead.
+        """
         self.ensure_collection()
         from qdrant_client.http import models as qmodels
+
+        # Filter out very small chunks and prepare payloads
+        items = []  # tuples of (chunk, content)
+        for chunk in chunks:
+            content = chunk.content.strip()
+            if len(content) < 10:
+                continue
+            items.append((chunk, content))
+
+        if not items:
+            return 0
+
+        contents = [c for (_, c) in items]
+
+        # Obtain embeddings in batches via the EmbeddingClient
+        start_ts = time.time()
+        embeddings = await (self.embedding_client.embed_batch(contents) if self.embedding_client else [[0.0] * self.settings.vector_dimension for _ in contents])
+        elapsed = time.time() - start_ts
+        logger.info("embeddings_obtained: repository=%s provider=%s count=%d latency=%.3fs",
+                    repository_id,
+                    getattr(self.settings, "embedding_provider", None),
+                    len(embeddings),
+                    elapsed)
+
         points: list[qmodels.PointStruct] = []
         indexed = 0
 
-        for chunk in chunks:
-            if len(chunk.content.strip()) < 10:
-                continue
-            embedding = await self._get_embedding(chunk.content)
+        for (chunk, content), emb in zip(items, embeddings):
             point_id = str(uuid.uuid4())
             payload = {
                 "repository_id": repository_id,
@@ -75,26 +94,27 @@ class VectorStore:
                 "language": chunk.language,
                 "symbol_name": chunk.symbol_name,
                 "symbol_type": chunk.chunk_type,
-                "chunk_type": chunk.chunk_type,
-                "parent_symbol": chunk.parent_symbol,
                 "start_line": chunk.start_line,
                 "end_line": chunk.end_line,
-                "content": chunk.content[:2000],
-                "content_hash": self._content_hash(chunk.content),
+                "sha256": self._content_hash(content),
+                "content_preview": content[:2000],
             }
-            points.append(
-                qmodels.PointStruct(id=point_id, vector=embedding, payload=payload)
-            )
+            points.append(qmodels.PointStruct(id=point_id, vector=emb, payload=payload))
             indexed += 1
 
-            if len(points) >= 100:
+            # Flush to Qdrant in moderate sized batches
+            if len(points) >= 256:
                 if self.client:
                     self.client.upsert(collection_name=self.settings.qdrant_collection, points=points)
                 points = []
 
-        if points:
-            if self.client:
-                self.client.upsert(collection_name=self.settings.qdrant_collection, points=points)
+        if points and self.client:
+            self.client.upsert(collection_name=self.settings.qdrant_collection, points=points)
+
+        logger.info("vectors_indexed: repository=%s provider=%s vectors=%d",
+                    repository_id,
+                    getattr(self.settings, "embedding_provider", None),
+                    indexed)
 
         return indexed
 
@@ -107,7 +127,8 @@ class VectorStore:
         language: str | None = None,
     ) -> list[dict[str, Any]]:
         self.ensure_collection()
-        query_embedding = await self._get_embedding(query)
+        # Reuse embedding client to get query embedding
+        query_embedding = await (self.embedding_client.embed_batch([query])[0] if self.embedding_client else [0.0] * self.settings.vector_dimension)
 
         if not self.client:
             return []
@@ -150,7 +171,7 @@ class VectorStore:
                 "chunk_type": hit.payload.get("chunk_type"),
                 "language": hit.payload.get("language"),
                 "symbol_name": hit.payload.get("symbol_name"),
-                "content": hit.payload.get("content"),
+                "content": hit.payload.get("content_preview") or hit.payload.get("content"),
                 "start_line": hit.payload.get("start_line"),
                 "end_line": hit.payload.get("end_line"),
             }

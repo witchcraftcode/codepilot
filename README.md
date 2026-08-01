@@ -93,6 +93,7 @@ npm run dev
 | POST | `/api/v1/documentation` | Auto-generate docs |
 | POST | `/api/v1/explain` | Explain a function |
 | POST | `/api/v1/pr-review` | Review a pull request diff |
+| POST | `/api/v1/evaluation` | Run retrieval and RAG benchmark evaluation |
 | GET | `/api/v1/history` | Review history |
 | GET | `/api/v1/scores/{id}` | Repository health scores |
 | POST | `/api/v1/feedback` | Submit review feedback |
@@ -152,6 +153,9 @@ Tests cover:
 ```bash
 python evaluation/ragas_eval.py
 ```
+
+The backend also exposes a repository evaluation endpoint for benchmark execution and export:
+- **POST** `/api/v1/evaluation` — run retrieval/RAG evaluation and return JSON + Markdown report
 
 Metrics tracked:
 - **Retrieval**: Precision@k, Recall@k, MRR

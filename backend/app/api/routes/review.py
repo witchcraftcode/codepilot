@@ -95,7 +95,18 @@ async def get_review(
     report = report_result.scalar_one_or_none()
 
     agent_results = []
+    progress_updates = []
     for log in logs:
+        if log.agent_name == "progress":
+            if log.output:
+                progress_updates.append({
+                    "stage": log.output.get("stage"),
+                    "message": log.output.get("message"),
+                    "agents_to_run": log.output.get("agents_to_run"),
+                    "execution_plan": log.output.get("execution_plan"),
+                    "timestamp": log.created_at.isoformat(),
+                })
+            continue
         findings = []
         if log.findings:
             for f in log.findings:
@@ -110,18 +121,45 @@ async def get_review(
             )
         )
 
+    score_breakdown = {
+        "security": next((a.score for a in agent_results if a.agent_name == "security"), None),
+        "architecture": next((a.score for a in agent_results if a.agent_name == "architecture"), None),
+        "performance": next((a.score for a in agent_results if a.agent_name == "performance"), None),
+        "testing": next((a.score for a in agent_results if a.agent_name == "testing"), None),
+        "documentation": next((a.score for a in agent_results if a.agent_name == "documentation"), None),
+        "dependency": next((a.score for a in agent_results if a.agent_name == "dependencies"), None),
+    }
+
+    def estimate_effort():
+        total_findings = sum(len(a.findings) for a in agent_results)
+        critical = sum(1 for a in agent_results for f in a.findings if f.severity == "critical")
+        high = sum(1 for a in agent_results for f in a.findings if f.severity == "high")
+        if critical >= 3 or total_findings > 20:
+            return "4-6 weeks"
+        if high >= 5 or total_findings > 10:
+            return "2-4 weeks"
+        if total_findings > 0:
+            return "1-2 weeks"
+        return "3-7 days"
+
+    report_payload = {
+        "architecture": report.architecture if report else None,
+        "security": report.security if report else None,
+        "performance": report.performance if report else None,
+        "testing": report.testing if report else None,
+        "documentation": report.documentation if report else None,
+        "style": report.style if report else None,
+        "dependencies": report.dependencies if report else None,
+        "executive_summary": review.summary,
+        "score_breakdown": score_breakdown,
+        "estimated_effort": estimate_effort(),
+    } if report else None
+
     return ReviewDetailResponse(
         **ReviewResponse.model_validate(review).model_dump(),
         agent_results=agent_results,
-        report={
-            "architecture": report.architecture if report else None,
-            "security": report.security if report else None,
-            "performance": report.performance if report else None,
-            "testing": report.testing if report else None,
-            "documentation": report.documentation if report else None,
-            "style": report.style if report else None,
-            "dependencies": report.dependencies if report else None,
-        } if report else None,
+        report=report_payload,
+        progress_updates=progress_updates,
     )
 
 

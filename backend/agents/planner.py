@@ -2,14 +2,14 @@
 
 REVIEW_TYPE_AGENTS: dict[str, list[str]] = {
     "full": [
-        "repository", "architecture", "security", "performance",
-        "testing", "documentation", "style", "dependencies",
+        "repository", "security", "architecture", "performance",
+        "testing", "documentation", "dependencies",
     ],
     "security": ["repository", "security", "dependencies"],
     "performance": ["repository", "performance", "architecture"],
     "testing": ["repository", "testing"],
     "documentation": ["repository", "documentation"],
-    "architecture": ["repository", "architecture", "style"],
+    "architecture": ["repository", "architecture"],
     "style": ["repository", "style"],
     "dependencies": ["repository", "dependencies", "security"],
 }

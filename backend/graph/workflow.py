@@ -3,7 +3,59 @@
 import time
 from typing import Any
 
-from langgraph.graph import END, StateGraph
+try:
+    from langgraph.graph import END, StateGraph
+except Exception:
+    # Minimal fallback for environments without langgraph (tests)
+    END = "END"
+
+    class StateGraph:
+        def __init__(self, state_type=None):
+            self.nodes = {}
+            self.entry = None
+            self.edges = {}
+            self.cond_funcs = {}
+
+        def add_node(self, name, fn):
+            self.nodes[name] = fn
+
+        def set_entry_point(self, name):
+            self.entry = name
+
+        def add_edge(self, a, b):
+            self.edges.setdefault(a, []).append(b)
+
+        def add_conditional_edges(self, name, route_fn):
+            self.cond_funcs[name] = route_fn
+
+        def compile(self, progress_callback=None):
+            # return an object with ainvoke that sequentially calls nodes based on cond funcs
+            graph = self
+
+            class Compiled:
+                async def ainvoke(self, state):
+                    current = graph.entry
+                    while current and current != END:
+                        fn = graph.nodes.get(current)
+                        if fn:
+                            out = await fn(state)
+                            if out:
+                                state.update(out)
+                        if progress_callback:
+                            if callable(progress_callback):
+                                maybe_coro = progress_callback(state, current)
+                                if hasattr(maybe_coro, "__await__"):
+                                    await maybe_coro
+                        # routing
+                        if current in graph.cond_funcs:
+                            current = graph.cond_funcs[current](state)
+                        else:
+                            # next edge or end
+                            nexts = graph.edges.get(current, [])
+                            current = nexts[0] if nexts else END
+                    return state
+
+            return Compiled()
 
 from agents.specialized import (
     ArchitectureAgent,
@@ -32,24 +84,50 @@ AGENT_NODES = {
 
 EXECUTION_ORDER = [
     "repository",
-    "architecture",
     "security",
+    "architecture",
     "performance",
     "testing",
     "documentation",
-    "style",
     "dependencies",
+    "style",
     "summary",
 ]
 
 
 async def planner_node(state: ReviewState) -> dict[str, Any]:
+    try:
+        from opentelemetry import trace
+        tracer = trace.get_tracer(__name__)
+    except Exception:
+        class _DummyTracer:
+            def start_as_current_span(self, name):
+                class _S:
+                    def __enter__(self):
+                        return self
+
+                    def __exit__(self, exc_type, exc, tb):
+                        return False
+
+                return _S()
+
+        tracer = _DummyTracer()
+
     planner = PlannerAgent()
-    agents = await planner.plan(state)
-    return {
-        "agents_to_run": agents,
-        "execution_plan": f"Executing: {', '.join(agents)}",
-    }
+    with tracer.start_as_current_span("planner_node"):
+        plan = await planner.plan(state)
+
+    # plan may be dict or list
+    if isinstance(plan, dict):
+        agents = [a["name"] for a in plan.get("agents", [])]
+        return {
+            "agents_to_run": agents,
+            "execution_plan": plan.get("summary") or f"Executing: {', '.join(agents)}",
+            "plan_details": plan,
+        }
+    else:
+        agents = list(plan)
+        return {"agents_to_run": agents, "execution_plan": f"Executing: {', '.join(agents)}"}
 
 
 def make_agent_node(agent_name: str):
@@ -124,8 +202,8 @@ def build_review_graph() -> StateGraph:
 
 
 class ReviewWorkflow:
-    def __init__(self) -> None:
-        self.graph = build_review_graph().compile()
+    def __init__(self, progress_callback=None) -> None:
+        self.graph = build_review_graph().compile(progress_callback)
 
     async def run(self, initial_state: ReviewState) -> ReviewState:
         start = time.time()

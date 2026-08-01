@@ -132,6 +132,7 @@ class ReviewResponse(BaseModel):
     summary: str | None = None
     top_issues: list[dict] | None = None
     priority_fixes: list[dict] | None = None
+    progress_updates: list[dict] = []
     tokens_used: int = 0
     duration_ms: int | None = None
     created_at: datetime
@@ -196,6 +197,24 @@ class ChatContextResponse(BaseModel):
     question: str
     retrieved: list[RetrievedChunk]
     latency_ms: int
+
+
+class EvaluationQuery(BaseModel):
+    query: str
+    relevant_files: list[str] | None = None
+    ground_truth: str | None = None
+
+
+class EvaluationRequest(BaseModel):
+    repository_id: UUID
+    queries: list[EvaluationQuery]
+    top_k: int = 5
+    include_baseline: bool = True
+
+
+class EvaluationResponse(BaseModel):
+    report: dict[str, Any]
+    markdown: str
 
 
 # --- Specialized endpoints ---

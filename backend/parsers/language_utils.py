@@ -22,8 +22,6 @@ LANGUAGE_EXTENSIONS: dict[str, str] = {
     ".swift": "swift",
     ".kt": "kotlin",
     ".scala": "scala",
-    ".md": "markdown",
-    ".markdown": "markdown",
 }
 
 IGNORE_DIRS = {

@@ -61,6 +61,13 @@ class Settings(BaseSettings):
     # Embeddings
     embedding_provider: EmbeddingProvider = EmbeddingProvider.OPENAI
     embedding_model: str = "text-embedding-3-small"
+    # Batch size used when requesting embeddings from provider (helps throughput)
+    embedding_batch_size: int = 64
+    # Retry settings for transient provider/network errors
+    embedding_max_retries: int = 3
+    embedding_backoff_base: float = 0.5
+    # How long to cache embeddings in Redis (days)
+    embedding_cache_ttl_days: int = 7
     voyage_api_key: str = ""
 
     # GitHub OAuth

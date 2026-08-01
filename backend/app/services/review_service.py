@@ -70,6 +70,7 @@ class ReviewService:
                 "style_result": None,
                 "dependency_result": None,
                 "overall_score": None,
+                "progress_updates": [],
                 "summary": None,
                 "top_issues": [],
                 "priority_fixes": [],
@@ -79,7 +80,29 @@ class ReviewService:
                 "errors": [],
             }
 
-            result = await self.workflow.run(initial_state)
+            async def progress_callback(state: ReviewState, current_stage: str) -> None:
+                progress_entry = {
+                    "stage": current_stage,
+                    "message": f"Completed stage: {current_stage}",
+                    "agents_to_run": state.get("agents_to_run"),
+                    "execution_plan": state.get("execution_plan"),
+                    "total_tokens": state.get("total_tokens", 0),
+                }
+                log = AgentLog(
+                    review_id=review.id,
+                    agent_name="progress",
+                    status="running",
+                    output=progress_entry,
+                    findings=[],
+                    score=None,
+                    tokens_used=0,
+                    duration_ms=0,
+                )
+                self.db.add(log)
+                await self.db.flush()
+
+            workflow = ReviewWorkflow(progress_callback=progress_callback)
+            result = await workflow.run(initial_state)
 
             review.overall_score = result.get("overall_score")
             review.summary = result.get("summary")

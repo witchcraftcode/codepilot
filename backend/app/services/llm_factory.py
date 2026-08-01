@@ -1,6 +1,10 @@
 """Configurable LLM provider factory."""
 
-from langchain_core.language_models.chat_models import BaseChatModel
+try:
+    from langchain_core.language_models.chat_models import BaseChatModel
+except Exception:
+    # Fallback typing for test environments without langchain
+    BaseChatModel = object
 
 from app.config import LLMProvider, get_settings
 
