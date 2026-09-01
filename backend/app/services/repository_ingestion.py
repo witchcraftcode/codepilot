@@ -7,7 +7,10 @@ from pathlib import Path
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
+from app.models.repository_file_hash import RepositoryFileHash
+from app.services.file_hash import sha256_file
 from app.models.repository import Repository
 from app.parsers.language_utils import detect_language, should_ignore_path
 from app.parsers.repository_loader import RepositoryLoader
@@ -38,6 +41,15 @@ class RepositoryIngestionService:
         try:
             repo_path = await self.loader.clone(github_url, repository.id, branch)
             metadata = await asyncio.to_thread(self.parser.parse, repo_path)
+            changed_files = await self.get_changed_files(
+                repository.id,
+                repo_path,
+            )
+
+            logger.info(
+                "repository.changed_files",
+                changed=len(changed_files),
+            )
             language_summary = self._filter_supported_languages(metadata.get("languages", {}))
             file_count = await asyncio.to_thread(self._count_supported_files, repo_path)
 
@@ -51,6 +63,7 @@ class RepositoryIngestionService:
 
             logger.info("repository.ingested", repository_id=str(repository.id), file_count=file_count)
         except Exception as exc:
+            await self.update_file_hashes(repository.id, repo_path, changed_files)
             repository.status = "error"
             repository.error_message = str(exc)
             await self.db.flush()
@@ -72,6 +85,84 @@ class RepositoryIngestionService:
             if lang in SUPPORTED_INGESTION_LANGUAGES:
                 total += 1
         return total
+
+    async def get_changed_files(
+        self,
+        repository_id: UUID,
+        repo_path: Path,
+    ) -> list[Path]:
+        """
+        Return only files whose SHA-256 hash changed since last indexing.
+        """
+
+        changed: list[Path] = []
+
+        for file_path in repo_path.rglob("*"):
+
+            if not file_path.is_file():
+                continue
+
+            rel = file_path.relative_to(repo_path)
+
+            if should_ignore_path(rel):
+                continue
+
+            language = detect_language(str(file_path))
+
+            if language not in SUPPORTED_INGESTION_LANGUAGES:
+                continue
+
+            current_sha = sha256_file(file_path)
+
+            result = await self.db.execute(
+                select(RepositoryFileHash).where(
+                    RepositoryFileHash.repository_id == repository_id,
+                    RepositoryFileHash.file_path == str(rel),
+                )
+            )
+
+            record = result.scalar_one_or_none()
+
+            if record is None:
+                changed.append(file_path)
+                continue
+
+            if record.sha256 != current_sha:
+                changed.append(file_path)
+
+        return changed
+    
+    async def update_file_hashes(
+        self,
+        repository_id: UUID,
+        repo_path: Path,
+        files: list[Path],
+    ) -> None:
+
+        for file_path in files:
+
+            rel = str(file_path.relative_to(repo_path))
+            current_sha = sha256_file(file_path)
+
+            result = await self.db.execute(
+                select(RepositoryFileHash).where(
+                    RepositoryFileHash.repository_id == repository_id,
+                    RepositoryFileHash.file_path == rel,
+                )
+            )
+
+            record = result.scalar_one_or_none()
+
+            if record is None:
+                self.db.add(
+                    RepositoryFileHash(
+                        repository_id=repository_id,
+                        file_path=rel,
+                        sha256=current_sha,
+                    )
+                )
+            else:
+                record.sha256 = current_sha
 
     def _filter_supported_languages(self, languages: dict[str, int]) -> dict[str, int]:
         return {lang: count for lang, count in languages.items() if lang in SUPPORTED_INGESTION_LANGUAGES}
