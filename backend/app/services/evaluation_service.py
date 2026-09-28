@@ -1,14 +1,7 @@
 """Evaluation service for repository retrieval and RAG benchmarking."""
 
-import os
-import sys
 from typing import Any, Dict, List
 from uuid import UUID
-
-# Ensure repository-root evaluation utilities are importable when backend/ is the package root.
-ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-if ROOT_DIR not in sys.path:
-    sys.path.insert(0, ROOT_DIR)
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -114,10 +107,16 @@ class EvaluationService:
         report.performance.llm_latency_ms = int(sum(llm_latencies) / len(llm_latencies)) if llm_latencies else 0
         report.performance.total_ms = report.performance.retrieval_ms + report.performance.llm_latency_ms
         report.cost.tokens_used += sum(llm_tokens)
-        report.cost.cost_usd = estimate_cost(report.cost.tokens_used, self.settings.llm_provider.value)
+        report.cost.cost_usd = estimate_cost(
+            report.cost.tokens_used,
+            self.settings.llm_provider,
+        )
         report.baseline.average_latency_ms = int(report.baseline.average_latency_ms / len(baseline_answers)) if baseline_answers else 0
         report.baseline.answers = baseline_answers
-        report.baseline.cost_usd = estimate_cost(report.baseline.total_tokens, self.settings.llm_provider.value)
+        report.baseline.cost_usd = estimate_cost(
+            report.baseline.total_tokens,
+            self.settings.llm_provider,
+        )
 
         if ground_truths:
             report.rag = await evaluate_with_ragas(
@@ -151,7 +150,7 @@ class EvaluationService:
             }
 
         if hasattr(self.settings, "llm_provider"):
-            report.metadata["provider"] = self.settings.llm_provider.value
+            report.metadata["provider"] = self.settings.llm_provider
 
         report.metadata["memory_usage_mb"] = self._get_memory_usage_mb()
         return report
