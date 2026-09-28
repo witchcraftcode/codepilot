@@ -10,12 +10,14 @@ from app.services.cache import cache_service
 
 logger = logging.getLogger("codepilot.startup")
 
+settings = get_settings() 
+
 client = QdrantClient(
     url=settings.qdrant_url,
     api_key=settings.qdrant_api_key,
 )
 
-settings = get_settings()
+
 print(settings.qdrant_url)
 print("API KEY:", settings.qdrant_api_key[:8] if settings.qdrant_api_key else "EMPTY")
 
@@ -38,7 +40,6 @@ async def check_redis_connection() -> None:
 async def check_qdrant_connection() -> None:
     """Verify that Qdrant is reachable and accepting requests."""
     logger.debug("Checking Qdrant connection")
-    settings = get_settings()
     client = QdrantClient(
         url=settings.qdrant_url,
         api_key=settings.qdrant_api_key,
