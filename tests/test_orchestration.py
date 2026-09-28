@@ -109,21 +109,21 @@ class TestLanguageUtils:
 
 class TestRetrievalMetrics:
     def test_precision_at_k(self):
-        from evaluation.ragas_eval import compute_precision_at_k
+        from backend.evaluation.ragas_eval import compute_precision_at_k
 
         relevant = {"a.py", "b.py"}
         retrieved = ["a.py", "c.py", "b.py", "d.py", "e.py"]
         assert compute_precision_at_k(relevant, retrieved, k=5) == 0.4
 
     def test_recall_at_k(self):
-        from evaluation.ragas_eval import compute_recall_at_k
+        from backend.evaluation.ragas_eval import compute_recall_at_k
 
         relevant = {"a.py", "b.py"}
         retrieved = ["a.py", "c.py", "x.py"]
         assert compute_recall_at_k(relevant, retrieved, k=3) == 0.5
 
     def test_mrr(self):
-        from evaluation.ragas_eval import compute_mrr
+        from backend.evaluation.ragas_eval import compute_mrr
 
         relevant = {"b.py"}
         retrieved = ["a.py", "b.py", "c.py"]

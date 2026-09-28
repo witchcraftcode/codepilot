@@ -108,6 +108,21 @@ EXECUTION_ORDER = [
 
 
 async def planner_node(state: ReviewState) -> dict[str, Any]:
+    # Pull Request mode bypasses the LLM planner
+    if state.get("pr_mode"):
+        return {
+            "agents_to_run": [
+                "security",
+                "architecture",
+                "performance",
+                "testing",
+                "documentation",
+                "style",
+                "summary",
+            ],
+            "execution_plan": "AI Pull Request Review",
+        }
+
     start = time.perf_counter()
     planner = PlannerAgent()
     with trace_span("langgraph.node", node="planner"):

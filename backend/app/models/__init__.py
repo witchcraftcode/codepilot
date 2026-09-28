@@ -1,26 +1,28 @@
-from app.models.agent_log import AgentLog
-from app.models.conversation import Conversation, Message
-from app.models.embedding import EmbeddingRecord
-from app.models.execution_history import ExecutionHistory
-from app.models.feedback import ReviewFeedback
-from app.models.pr_review_comment import PRReviewComment
-from app.models.report import Report
-from app.models.repository import Repository
-from app.models.repository_file_hash import RepositoryFileHash
-from app.models.review import Review
-from app.models.user import User
+from app.database.session import Base
+
+from .agent_log import AgentLog
+from .conversation import Conversation
+from .embedding import EmbeddingRecord
+from .execution_history import ExecutionHistory
+from .feedback import ReviewFeedback
+from .pr_review_comment import PRReviewComment
+from .report import Report
+from .repository import Repository
+from .repository_file_hash import RepositoryFileHash
+from .review import Review
+from .user import User
 
 __all__ = [
-    "User",
+    "Base",
+    "AgentLog",
+    "Conversation",
+    "EmbeddingRecord",
+    "ExecutionHistory",
+    "ReviewFeedback",
+    "PRReviewComment",
+    "Report",
     "Repository",
     "RepositoryFileHash",
     "Review",
-    "Conversation",
-    "Message",
-    "EmbeddingRecord",
-    "AgentLog",
-    "ExecutionHistory",
-    "Report",
-    "ReviewFeedback",
-    "PRReviewComment",
+    "User",
 ]

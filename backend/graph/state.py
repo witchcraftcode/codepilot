@@ -37,6 +37,16 @@ class ReviewState(TypedDict):
     user_request: str
     focus_areas: list[str]
 
+    # Pull Request review context
+    pr_mode: bool
+
+    pr_owner: str | None
+    pr_repo: str | None
+    pr_number: int | None
+
+    changed_files: list[dict[str, Any]]
+    current_file: dict[str, Any] | None
+
     # Planner output
     agents_to_run: list[str]
     execution_plan: str

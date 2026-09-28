@@ -2,7 +2,7 @@ import asyncio
 from uuid import uuid4
 
 from app.services.evaluation_service import EvaluationService
-from evaluation.ragas_eval import EvaluationReport
+from backend.evaluation.ragas_eval import EvaluationReport
 
 
 class DummyRepo:
