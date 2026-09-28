@@ -10,6 +10,14 @@ from app.services.cache import cache_service
 
 logger = logging.getLogger("codepilot.startup")
 
+client = QdrantClient(
+    url=settings.qdrant_url,
+    api_key=settings.qdrant_api_key,
+)
+
+settings = get_settings()
+print(settings.qdrant_url)
+print("API KEY:", settings.qdrant_api_key[:8] if settings.qdrant_api_key else "EMPTY")
 
 async def check_postgres_connection() -> None:
     """Verify that PostgreSQL is reachable and accepting queries."""
@@ -31,7 +39,10 @@ async def check_qdrant_connection() -> None:
     """Verify that Qdrant is reachable and accepting requests."""
     logger.debug("Checking Qdrant connection")
     settings = get_settings()
-    client = QdrantClient(url=settings.qdrant_url)
+    client = QdrantClient(
+        url=settings.qdrant_url,
+        api_key=settings.qdrant_api_key,
+    )
     try:
         await asyncio.to_thread(client.get_collections)
     except Exception as exc:
