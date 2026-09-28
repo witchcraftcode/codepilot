@@ -65,7 +65,15 @@ class Settings(BaseSettings):
     )
 
     # Qdrant Cloud
-    qdrant_api_key: str = Field(default="", alias="QDRANT_API_KEY")
+    qdrant_url: str = Field(
+        default="http://localhost:6333",
+        alias="QDRANT_URL",
+    )
+
+    qdrant_api_key: str = Field(
+        default="",
+        alias="QDRANT_API_KEY",
+    )
 
     # LLM
     llm_provider: LLMProvider = Field(
