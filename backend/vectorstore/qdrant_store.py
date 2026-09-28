@@ -12,6 +12,15 @@ from parsers.chunker import CodeChunk
 
 logger = logging.getLogger(__name__)
 
+from qdrant_client import QdrantClient
+from app.config import get_settings
+
+settings = get_settings()
+
+client = QdrantClient(
+    url=settings.qdrant_url,
+    api_key=settings.qdrant_api_key,
+)
 
 class VectorStore:
     def __init__(self) -> None:
@@ -22,7 +31,14 @@ class VectorStore:
             QdrantClient = None  # type: ignore
 
         self.settings = get_settings()
-        self.client = QdrantClient(url=self.settings.qdrant_url) if QdrantClient else None
+        self.client = (
+            QdrantClient(
+                url=self.settings.qdrant_url,
+                api_key=self.settings.qdrant_api_key,
+            )
+            if QdrantClient
+            else None
+        )
         # Use the new EmbeddingClient wrapper for batching, caching and retries
         try:
             from app.services.embedding_client import EmbeddingClient
