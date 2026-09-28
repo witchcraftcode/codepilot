@@ -81,6 +81,16 @@ class Settings(BaseSettings):
     langsmith_api_key: str = Field(default="", alias="LANGSMITH_API_KEY")
     langsmith_tracing: bool = Field(default=False, alias="LANGSMITH_TRACING")
 
+    # OpenTelemetry
+    otel_exporter_endpoint: str = Field(
+        default="",
+        alias="OTEL_EXPORTER_ENDPOINT",
+    )
+
+    otel_service_name: str = Field(
+        default="codepilot-backend",
+        alias="OTEL_SERVICE_NAME",
+    )
 
 @lru_cache
 def get_settings() -> Settings:
