@@ -1,8 +1,12 @@
 from functools import lru_cache
+from enum import Enum
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+class LLMProvider(str, Enum):
+    OPENAI = "openai"
+    ANTHROPIC = "anthropic"
 
 class Settings(BaseSettings):
     # App
@@ -64,7 +68,10 @@ class Settings(BaseSettings):
     qdrant_api_key: str = Field(default="", alias="QDRANT_API_KEY")
 
     # LLM
-    llm_provider: str = Field(default="openai", alias="LLM_PROVIDER")
+    llm_provider: LLMProvider = Field(
+        default=LLMProvider.OPENAI,
+        alias="LLM_PROVIDER",
+    )
     llm_model: str = Field(default="gpt-4.1", alias="LLM_MODEL")
 
     # Anthropic
