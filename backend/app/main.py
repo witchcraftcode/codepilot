@@ -89,6 +89,15 @@ def create_app() -> FastAPI:
     app.include_router(evaluation_router, prefix=prefix)
     app.include_router(github_router)
 
+
+    @app.get("/")
+    async def root():
+        return {
+            "name": "CodePilot API",
+            "status": "healthy",
+            "docs": "/docs"
+        }
+
     @app.get("/health")
     async def health():
         return {"status": "ok"}
