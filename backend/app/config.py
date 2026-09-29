@@ -54,6 +54,11 @@ class Settings(BaseSettings):
         default=60,
         alias="JWT_EXPIRE_MINUTES",
     )
+
+    jwt_algorithm: str = Field(
+        default="HS256",
+        alias="JWT_ALGORITHM",
+    )
     
     model_config = SettingsConfigDict(
         env_file=".env",
