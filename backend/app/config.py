@@ -46,10 +46,15 @@ class Settings(BaseSettings):
         default="http://localhost:8000/api/v1/auth/callback",
         alias="GITHUB_REDIRECT_URI",
     )
-    
+
     # JWT
     jwt_secret: str = Field(default="codepilot-dev-secret", alias="JWT_SECRET")
 
+    jwt_expire_minutes: int = Field(
+        default=60,
+        alias="JWT_EXPIRE_MINUTES",
+    )
+    
     model_config = SettingsConfigDict(
         env_file=".env",
         extra="ignore",
