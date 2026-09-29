@@ -42,7 +42,11 @@ class Settings(BaseSettings):
     # GitHub
     github_client_id: str = Field(default="", alias="GITHUB_CLIENT_ID")
     github_client_secret: str = Field(default="", alias="GITHUB_CLIENT_SECRET")
-
+    github_redirect_uri: str = Field(
+        default="http://localhost:8000/api/v1/auth/callback",
+        alias="GITHUB_REDIRECT_URI",
+    )
+    
     # JWT
     jwt_secret: str = Field(default="codepilot-dev-secret", alias="JWT_SECRET")
 
