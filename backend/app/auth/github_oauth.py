@@ -26,7 +26,7 @@ class AuthService:
         try:
             payload = jwt.decode(token, self.settings.jwt_secret, algorithms=[self.settings.jwt_algorithm])
             return UUID(payload["sub"])
-        except (JWTError, ValueError):
+        except (JWTError, KeyError, TypeError, ValueError):
             return None
 
     async def get_github_oauth_url(self) -> str:

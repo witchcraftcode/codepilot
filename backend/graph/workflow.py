@@ -227,10 +227,16 @@ def build_review_graph() -> StateGraph:
 
 class ReviewWorkflow:
     def __init__(self, progress_callback=None) -> None:
-        self.graph = build_review_graph().compile(progress_callback)
+        self.progress_callback = progress_callback
+        self.graph = build_review_graph().compile()
 
     async def run(self, initial_state: ReviewState) -> ReviewState:
         start = time.time()
         result = await self.graph.ainvoke(initial_state)
+        if self.progress_callback:
+            for stage in ["planner", *result.get("agents_to_run", [])]:
+                maybe_coro = self.progress_callback(result, stage)
+                if hasattr(maybe_coro, "__await__"):
+                    await maybe_coro
         result["duration_ms"] = int((time.time() - start) * 1000)
         return result

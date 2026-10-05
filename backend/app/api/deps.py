@@ -2,7 +2,7 @@
 
 from typing import Annotated
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,24 +13,35 @@ from app.models.user import User
 security = HTTPBearer(auto_error=False)
 
 
+def _auth_error(detail: str) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail=detail,
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
 async def get_current_user(
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)],
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Security(security)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> User:
     if not credentials:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+        raise _auth_error("Not authenticated")
+    if credentials.scheme.lower() != "bearer":
+        raise _auth_error("Invalid authentication scheme")
+
     auth = AuthService(db)
     user = await auth.get_current_user(credentials.credentials)
     if not user:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+        raise _auth_error("Invalid token")
     return user
 
 
 async def get_optional_user(
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)],
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Security(security)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> User | None:
-    if not credentials:
+    if not credentials or credentials.scheme.lower() != "bearer":
         return None
     auth = AuthService(db)
     return await auth.get_current_user(credentials.credentials)

@@ -52,8 +52,15 @@ class VectorStore:
             return
         # Lazy import models to avoid test-time dependency
         from qdrant_client.http import models as qmodels
+        from qdrant_client.http.exceptions import ResponseHandlingException
 
-        collections = [c.name for c in self.client.get_collections().collections]
+        try:
+            collections = [c.name for c in self.client.get_collections().collections]
+        except ResponseHandlingException as exc:
+            logger.warning("qdrant.unavailable: collection check skipped: %s", exc)
+            self.client = None
+            return
+
         if self.settings.qdrant_collection not in collections:
             self.client.create_collection(
                 collection_name=self.settings.qdrant_collection,

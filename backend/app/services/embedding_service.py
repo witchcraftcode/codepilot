@@ -223,11 +223,11 @@ class EmbeddingService:
 
     async def _load_existing_hashes(self, repository_id: UUID) -> dict[str, str]:
         result = await self.db.execute(
-            select(RepositoryFileHash.file_path, RepositoryFileHash.file_hash).where(
+            select(RepositoryFileHash.file_path, RepositoryFileHash.sha256).where(
                 RepositoryFileHash.repository_id == repository_id
             )
         )
-        return {row.file_path: row.file_hash for row in result.all()}
+        return {row.file_path: row.sha256 for row in result.all()}
 
     def _compute_file_hash(self, file_path: Path) -> str:
         content = file_path.read_bytes()
@@ -374,13 +374,13 @@ class EmbeddingService:
         )
         record = existing.scalar_one_or_none()
         if record:
-            record.file_hash = file_hash
+            record.sha256 = file_hash
         else:
             self.db.add(
                 RepositoryFileHash(
                     repository_id=repository_id,
                     file_path=file_path,
-                    file_hash=file_hash,
+                    sha256=file_hash,
                 )
             )
         await self.db.flush()

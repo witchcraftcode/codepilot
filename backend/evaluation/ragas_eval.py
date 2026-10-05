@@ -1,8 +1,12 @@
 """RAGAS-based evaluation framework for retrieval and generation quality."""
 
 import asyncio
+import sys
 from dataclasses import dataclass, field
 from typing import Any
+
+sys.modules.setdefault("evaluation.ragas_eval", sys.modules[__name__])
+sys.modules.setdefault("backend.evaluation.ragas_eval", sys.modules[__name__])
 
 
 @dataclass

@@ -28,6 +28,7 @@ from app.schemas import (
     ReviewDetailResponse,
     ReviewListResponse,
     ReviewResponse,
+    ReviewType,
     SecurityAuditRequest,
     TestGenerationRequest,
 )
@@ -199,7 +200,7 @@ async def security_audit(
     user: Annotated[User, Depends(get_current_user)],
 ):
     return await create_review(
-        ReviewCreate(repository_id=body.repository_id, review_type="security"),
+        ReviewCreate(repository_id=body.repository_id, review_type=ReviewType.SECURITY),
         background_tasks,
         db,
         user,
