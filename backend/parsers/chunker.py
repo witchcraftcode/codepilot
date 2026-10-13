@@ -67,71 +67,61 @@ class CodeChunker:
             end_line=lines,
         )
 
-    def _chunk_python(self, content: str, file_path: str, language: str) -> list[CodeChunk]:
+
+    def _chunk_python(
+        self,
+        content: str,
+        file_path: str,
+        language: str,
+    ) -> list[CodeChunk]:
         import ast
 
-        chunks: list[CodeChunk] = [self._file_chunk(content, file_path, language)]
+        chunks: list[CodeChunk] = [
+            self._file_chunk(content, file_path, language)
+        ]
+
         try:
             tree = ast.parse(content)
         except SyntaxError:
             return chunks
 
         lines = content.splitlines()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ClassDef):
-                start = node.lineno
-                end = node.end_lineno or start
-                chunk_content = "\n".join(lines[start - 1 : end])
-                chunks.append(
-                    CodeChunk(
-                        content=chunk_content,
-                        file_path=file_path,
-                        chunk_type="class",
-                        language=language,
-                        symbol_name=node.name,
-                        start_line=start,
-                        end_line=end,
-                    )
+
+        def add_chunk(
+            node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef,
+            chunk_type: str,
+            parent_symbol: str | None = None,
+        ) -> None:
+            start = node.lineno
+            end = node.end_lineno or start
+
+            chunks.append(
+                CodeChunk(
+                    content="\n".join(lines[start - 1 : end]),
+                    file_path=file_path,
+                    chunk_type=chunk_type,
+                    language=language,
+                    symbol_name=node.name,
+                    parent_symbol=parent_symbol,
+                    start_line=start,
+                    end_line=end,
                 )
+            )
+
+        # Process top-level declarations and direct class methods.
+        for node in tree.body:
+            if isinstance(node, ast.ClassDef):
+                add_chunk(node, "class")
+
                 for item in node.body:
                     if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                        fn_start = item.lineno
-                        fn_end = item.end_lineno or fn_start
-                        fn_content = "\n".join(lines[fn_start - 1 : fn_end])
-                        chunks.append(
-                            CodeChunk(
-                                content=fn_content,
-                                file_path=file_path,
-                                chunk_type="method",
-                                language=language,
-                                symbol_name=item.name,
-                                parent_symbol=node.name,
-                                start_line=fn_start,
-                                end_line=fn_end,
-                            )
-                        )
+                        add_chunk(item, "method", node.name)
 
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                if not any(isinstance(p, ast.ClassDef) for p in ast.walk(tree) if hasattr(p, "body") and node in getattr(p, "body", [])):
-                    parent_classes = [
-                        n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and node in n.body
-                    ]
-                    if not parent_classes:
-                        start = node.lineno
-                        end = node.end_lineno or start
-                        chunk_content = "\n".join(lines[start - 1 : end])
-                        chunks.append(
-                            CodeChunk(
-                                content=chunk_content,
-                                file_path=file_path,
-                                chunk_type="function",
-                                language=language,
-                                symbol_name=node.name,
-                                start_line=start,
-                                end_line=end,
-                            )
-                        )
+                add_chunk(node, "function")
+
         return chunks
+
 
     def _chunk_js_ts(self, content: str, file_path: str, language: str) -> list[CodeChunk]:
         import re
