@@ -47,28 +47,54 @@ class VectorStore:
         except Exception:
             self.embedding_client = None
 
+
     def ensure_collection(self) -> None:
         if not self.client:
             return
-        # Lazy import models to avoid test-time dependency
+
         from qdrant_client.http import models as qmodels
         from qdrant_client.http.exceptions import ResponseHandlingException
 
+        collection_name = self.settings.qdrant_collection
+
         try:
-            collections = [c.name for c in self.client.get_collections().collections]
+            collections = [
+                c.name for c in self.client.get_collections().collections
+            ]
         except ResponseHandlingException as exc:
-            logger.warning("qdrant.unavailable: collection check skipped: %s", exc)
+            logger.warning("Qdrant collection check failed: %s", exc)
             self.client = None
             return
 
-        if self.settings.qdrant_collection not in collections:
+        if collection_name not in collections:
             self.client.create_collection(
-                collection_name=self.settings.qdrant_collection,
+                collection_name=collection_name,
                 vectors_config=qmodels.VectorParams(
                     size=self.settings.vector_dimension,
                     distance=qmodels.Distance.COSINE,
                 ),
             )
+
+        # Create any payload indexes required by repository filtering.
+        collection_info = self.client.get_collection(collection_name)
+        payload_schema = collection_info.payload_schema or {}
+
+        required_indexes = {
+            "repository_id": qmodels.PayloadSchemaType.KEYWORD,
+            "file_path": qmodels.PayloadSchemaType.KEYWORD,
+            "language": qmodels.PayloadSchemaType.KEYWORD,
+            "chunk_type": qmodels.PayloadSchemaType.KEYWORD,
+        }
+
+        for field_name, field_schema in required_indexes.items():
+            if field_name not in payload_schema:
+                self.client.create_payload_index(
+                    collection_name=collection_name,
+                    field_name=field_name,
+                    field_schema=field_schema,
+                    wait=True,
+                )
+
 
     def _content_hash(self, content: str) -> str:
         return hashlib.sha256(content.encode()).hexdigest()
@@ -264,4 +290,3 @@ class VectorStore:
                 )
             ),
         )
-        
