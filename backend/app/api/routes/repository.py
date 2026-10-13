@@ -60,12 +60,18 @@ async def create_repository(
         status="pending",
     )
     db.add(repository)
-    await db.flush()
+    await db.commit()
+    await db.refresh(repository)
 
     from app.config import get_settings
 
     settings = get_settings()
-    background_tasks.add_task(_index_background, repository.id, body.branch, settings.database_url)
+    background_tasks.add_task(
+        _index_background,
+        repository.id,
+        body.branch,
+        settings.database_url,
+    )
 
     return repository
 
