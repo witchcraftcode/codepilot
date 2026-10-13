@@ -238,22 +238,30 @@ class VectorStore:
 
     def delete_repository_file(self, repository_id: str, file_path: str) -> None:
         if not self.client:
-           return
+            return
+
+        self.ensure_collection()
+
+        if not self.client:
+            return
+
         from qdrant_client.http import models as qmodels
+
         self.client.delete(
-           collection_name=self.settings.qdrant_collection,
-           points_selector=qmodels.FilterSelector(
-               filter=qmodels.Filter(
-                   must=[
-                       qmodels.FieldCondition(
-                           key="repository_id",
-                           match=qmodels.MatchValue(value=repository_id),
-                       ),
-                       qmodels.FieldCondition(
-                           key="file_path",
-                           match=qmodels.MatchValue(value=file_path),
-                       ),
-                   ]
-               )
-           ),
+            collection_name=self.settings.qdrant_collection,
+            points_selector=qmodels.FilterSelector(
+                filter=qmodels.Filter(
+                    must=[
+                        qmodels.FieldCondition(
+                            key="repository_id",
+                            match=qmodels.MatchValue(value=repository_id),
+                        ),
+                        qmodels.FieldCondition(
+                            key="file_path",
+                            match=qmodels.MatchValue(value=file_path),
+                        ),
+                    ]
+                )
+            ),
         )
+        

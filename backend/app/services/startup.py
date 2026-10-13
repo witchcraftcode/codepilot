@@ -17,10 +17,6 @@ client = QdrantClient(
     api_key=settings.qdrant_api_key,
 )
 
-
-print(settings.qdrant_url)
-print("API KEY:", settings.qdrant_api_key[:8] if settings.qdrant_api_key else "EMPTY")
-
 async def check_postgres_connection() -> None:
     """Verify that PostgreSQL is reachable and accepting queries."""
     logger.debug("Checking PostgreSQL connection")
