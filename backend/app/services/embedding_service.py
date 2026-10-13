@@ -476,7 +476,14 @@ class EmbeddingService:
             "message": message,
             **payload,
         }
-        logger.info("repository.index.progress", extra=event)
+        logger.info(
+            "repository.index.progress",
+            extra={
+                key: value
+                for key, value in event.items()
+                if key not in {"message", "asctime", "levelname", "name", "pathname", "filename", "module", "exc_info", "exc_text", "stack_info", "lineno", "funcName", "created", "msecs", "relativeCreated", "thread", "threadName", "processName", "process", "taskName"}
+            },
+        )
         if progress_callback is None:
             return
         result = progress_callback(event)
