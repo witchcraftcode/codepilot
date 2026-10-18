@@ -33,21 +33,34 @@ async def check_redis_connection() -> None:
 
 
 async def check_qdrant_connection() -> None:
-    """Verify that Qdrant is reachable and accepting requests."""
+    """Verify the configured Qdrant collection with one bounded async request."""
     logger.debug("Checking Qdrant connection")
-    from qdrant_client import QdrantClient
+    from qdrant_client import AsyncQdrantClient
 
-    client = QdrantClient(
+    timeout_seconds = settings.startup_dependency_timeout_seconds
+    client = AsyncQdrantClient(
         url=settings.qdrant_url,
         api_key=settings.qdrant_api_key,
-        timeout=settings.health_check_timeout_seconds,
+        timeout=timeout_seconds,
+        check_compatibility=False,
     )
     try:
-        await asyncio.to_thread(client.get_collections)
+        # Do not enumerate every collection; readiness requires this collection.
+        await client.get_collection(collection_name=settings.qdrant_collection)
+    except asyncio.CancelledError:
+        logger.info("startup.check_cancelled dependency=qdrant")
+        raise
     except Exception as exc:
-        raise RuntimeError("Qdrant connection failure") from exc
+        logger.error("startup.check_failed dependency=qdrant error_type=%s", type(exc).__name__)
+        raise RuntimeError("Qdrant connection failure") from None
     finally:
-        client.close()
+        try:
+            await client.close()
+        except Exception as exc:
+            logger.warning(
+                "startup.client_close_failed dependency=qdrant error_type=%s",
+                type(exc).__name__,
+            )
 
 
 async def run_startup_checks() -> None:
@@ -55,8 +68,9 @@ async def run_startup_checks() -> None:
     logger.info("Performing startup dependency checks")
     checks = (
         ("postgres", check_postgres_connection, settings.database_connect_timeout_seconds + 5),
-        ("redis", check_redis_connection, settings.health_check_timeout_seconds),
-        ("qdrant", check_qdrant_connection, settings.health_check_timeout_seconds),
+        ("redis", check_redis_connection, settings.startup_dependency_timeout_seconds),
+        # Allow the Qdrant client's own finite request timeout to expire first.
+        ("qdrant", check_qdrant_connection, settings.startup_dependency_timeout_seconds + 2),
     )
     for dependency, check, timeout_seconds in checks:
         try:
@@ -68,6 +82,9 @@ async def run_startup_checks() -> None:
                 timeout_seconds,
             )
             raise RuntimeError(f"Startup dependency check timed out: {dependency}") from None
+        except asyncio.CancelledError:
+            logger.info("startup.check_cancelled dependency=%s", dependency)
+            raise
         except Exception as exc:
             logger.error(
                 "startup.check_failed dependency=%s error_type=%s",

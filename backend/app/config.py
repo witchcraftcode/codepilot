@@ -52,6 +52,12 @@ class Settings(BaseSettings):
         gt=0,
         le=30,
     )
+    startup_dependency_timeout_seconds: float = Field(
+        default=10.0,
+        alias="STARTUP_DEPENDENCY_TIMEOUT_SECONDS",
+        ge=1,
+        le=60,
+    )
 
     @field_validator("database_url", mode="before")
     @classmethod

@@ -114,7 +114,7 @@ async def test_startup_times_out_postgres_and_does_not_continue(monkeypatch):
     monkeypatch.setattr(
         startup,
         "settings",
-        SimpleNamespace(database_connect_timeout_seconds=-4.99, health_check_timeout_seconds=0.01),
+        SimpleNamespace(database_connect_timeout_seconds=-4.99, startup_dependency_timeout_seconds=0.01),
     )
     monkeypatch.setattr(startup, "check_postgres_connection", hangs)
     monkeypatch.setattr(startup, "check_redis_connection", should_not_run)
@@ -138,7 +138,7 @@ async def test_startup_fails_fast_on_unreachable_postgres_without_logging_url(
     monkeypatch.setattr(
         startup,
         "settings",
-        SimpleNamespace(database_connect_timeout_seconds=1, health_check_timeout_seconds=1),
+        SimpleNamespace(database_connect_timeout_seconds=1, startup_dependency_timeout_seconds=1),
     )
     monkeypatch.setattr(startup, "check_postgres_connection", unreachable)
     monkeypatch.setattr(startup, "check_redis_connection", should_not_run)
