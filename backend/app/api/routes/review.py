@@ -40,15 +40,66 @@ from app.services.review_service import ReviewService
 router = APIRouter(tags=["review"])
 
 
-async def _run_review_background(review_id: UUID, repository_id: UUID, user_id: UUID, review_type: str, db_url: str, focus: list | None, prompt: str | None) -> None:
-    from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
+async def _run_review_background(
+    review_id: UUID,
+    repository_id: UUID,
+    user_id: UUID,
+    review_type: str,
+    db_url: str,
+    focus: list | None,
+    prompt: str | None,
+) -> None:
+    import logging
 
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import (
+        AsyncSession,
+        async_sessionmaker,
+        create_async_engine,
+    )
+
+    from app.models.review import Review
+
+    logger = logging.getLogger(__name__)
     engine = create_async_engine(db_url)
-    Session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    async with Session() as session:
-        service = ReviewService(session)
-        await service.start_review(repository_id, user_id, review_type, focus, prompt)
-        await session.commit()
+    Session = async_sessionmaker(
+        engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
+
+    try:
+        async with Session() as session:
+            service = ReviewService(session)
+            await service.start_review(
+                repository_id, user_id, review_type, focus, prompt
+            )
+            await session.commit()
+
+    except Exception:
+        logger.exception("Review background task failed: %s", review_id)
+
+        try:
+            async with Session() as session:
+                result = await session.execute(
+                    select(Review).where(Review.id == review_id)
+                )
+                review = result.scalar_one_or_none()
+
+                if review and review.status not in ("completed", "failed"):
+                    review.status = "failed"
+                    review.summary = (
+                        "Review failed. Check server logs for the underlying error."
+                    )
+                    await session.commit()
+
+        except Exception:
+            logger.exception(
+                "Could not persist failure status for review: %s", review_id
+            )
+
+    finally:
+        await engine.dispose()
 
 
 @router.post("/review", response_model=ReviewResponse, status_code=201)
