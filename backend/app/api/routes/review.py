@@ -164,8 +164,11 @@ async def get_review(
         "estimated_effort": estimate_effort(),
     } if report else None
 
+    review_data = ReviewResponse.model_validate(review).model_dump()
+    review_data.pop("progress_updates", None)
+
     return ReviewDetailResponse(
-        **ReviewResponse.model_validate(review).model_dump(),
+        **review_data,
         agent_results=agent_results,
         report=report_payload,
         progress_updates=progress_updates,
