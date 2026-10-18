@@ -56,6 +56,22 @@ async def _dependencies_ready(
     return True
 
 
+async def _review_recovery_loop() -> None:
+    """Periodically fail queued reviews whose in-process task was lost."""
+    while True:
+        await asyncio.sleep(60)
+        try:
+            async with AsyncSessionLocal() as session:
+                stale_count = await ReviewService.fail_abandoned_pending_reviews(session)
+                if stale_count:
+                    await session.commit()
+                    logger.warning("review.stale_pending_failed count=%d", stale_count)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("review.pending_recovery_failed")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     configure_logging()
@@ -65,16 +81,23 @@ async def lifespan(app: FastAPI):
     await run_startup_checks()
     # Schema lifecycle is managed by Alembic before the service is deployed.
     async with AsyncSessionLocal() as session:
-        stale_count = await ReviewService.fail_abandoned_pending_reviews(session)
+        stale_count = await ReviewService.fail_abandoned_pending_reviews(
+            session,
+            include_running=True,
+        )
         if stale_count:
             await session.commit()
-            logger.warning("review.stale_pending_failed count=%d", stale_count)
+            logger.warning("review.stale_work_failed count=%d", stale_count)
 
-    yield
-
-    await cache_service.disconnect()
-    await engine.dispose()
-    logger.info("application.shutdown")
+    recovery_task = asyncio.create_task(_review_recovery_loop())
+    try:
+        yield
+    finally:
+        recovery_task.cancel()
+        await asyncio.gather(recovery_task, return_exceptions=True)
+        await cache_service.disconnect()
+        await engine.dispose()
+        logger.info("application.shutdown")
 
 
 def create_app() -> FastAPI:

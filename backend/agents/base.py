@@ -38,15 +38,9 @@ class BaseAgent(ABC):
 
     async def _ensure_llm(self):
         if getattr(self, "_llm", None) is None:
-            try:
-                self._llm = get_llm()
-            except Exception:
-                # Fallback dummy LLM
-                class _D:
-                    async def ainvoke(self, messages):
-                        return type("R", (), {"content": "{}"})()
-
-                self._llm = _D()
+            # Provider/configuration failures must fail the review. A dummy
+            # response here used to turn an unavailable model into score 50.
+            self._llm = get_llm()
 
     @abstractmethod
     def get_system_prompt(self) -> str:
@@ -135,18 +129,25 @@ Respond with JSON only:
         duration_ms = int((time.time() - start) * 1000)
 
         try:
-            content = response.content
+            content = str(response.content)
             if "```json" in content:
                 content = content.split("```json")[1].split("```")[0]
             elif "```" in content:
                 content = content.split("```")[1].split("```")[0]
             parsed = json.loads(content.strip())
-        except (json.JSONDecodeError, IndexError):
-            parsed = {
-                "score": 50,
-                "summary": str(response.content)[:500],
-                "findings": [],
-            }
+        except (json.JSONDecodeError, IndexError, AttributeError):
+            raise RuntimeError(f"{self.name} agent returned invalid analysis JSON") from None
+
+        if (
+            not isinstance(parsed, dict)
+            or not isinstance(parsed.get("score"), int)
+            or isinstance(parsed.get("score"), bool)
+            or not 0 <= parsed["score"] <= 100
+            or not isinstance(parsed.get("summary"), str)
+            or not parsed["summary"].strip()
+            or not isinstance(parsed.get("findings"), list)
+        ):
+            raise RuntimeError(f"{self.name} agent returned incomplete analysis")
 
         findings: list[AgentFinding] = []
         for f in parsed.get("findings", []):

@@ -1,5 +1,7 @@
 """Review API routes."""
 
+import asyncio
+from datetime import datetime, timezone
 from typing import Annotated
 from uuid import UUID
 
@@ -98,6 +100,21 @@ async def _run_review_background(
             )
             await session.commit()
 
+    except asyncio.CancelledError:
+        logger.warning("Review background task interrupted: %s", review_id)
+        try:
+            async with Session() as session:
+                result = await session.execute(select(Review).where(Review.id == review_id))
+                review = result.scalar_one_or_none()
+                if review and review.status not in ("completed", "failed"):
+                    review.status = "failed"
+                    review.summary = "Review interrupted because the worker stopped. Please retry."
+                    review.completed_at = datetime.now(timezone.utc)
+                    await session.commit()
+        except Exception:
+            logger.exception("Could not persist interrupted review status: %s", review_id)
+        raise
+
     except Exception:
         logger.exception("Review background task failed: %s", review_id)
 
@@ -113,6 +130,7 @@ async def _run_review_background(
                     review.summary = (
                         "Review failed. Check server logs for the underlying error."
                     )
+                    review.completed_at = datetime.now(timezone.utc)
                     await session.commit()
 
         except Exception:
@@ -140,6 +158,9 @@ async def create_review(
     )
     db.add(review)
     await db.flush()
+    # The background worker uses a separate engine/session, so make the row
+    # visible before it starts looking up the review.
+    await db.commit()
 
     from app.config import get_settings
 

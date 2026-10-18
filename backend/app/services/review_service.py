@@ -4,7 +4,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import case, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent_log import AgentLog
@@ -14,6 +14,17 @@ from app.models.review import Review
 from graph.state import ReviewState
 from graph.workflow import ReviewWorkflow
 
+ANALYSIS_RESULT_KEYS = {
+    "repository": "repository_result",
+    "architecture": "architecture_result",
+    "security": "security_result",
+    "performance": "performance_result",
+    "testing": "testing_result",
+    "documentation": "documentation_result",
+    "style": "style_result",
+    "dependencies": "dependency_result",
+}
+
 
 class ReviewService:
     def __init__(self, db: AsyncSession) -> None:
@@ -21,17 +32,25 @@ class ReviewService:
         self.workflow = ReviewWorkflow()
 
     @staticmethod
-    async def fail_abandoned_pending_reviews(db: AsyncSession) -> int:
-        """Fail old queued rows after restart; never guess about active running work."""
+    async def fail_abandoned_pending_reviews(
+        db: AsyncSession,
+        *,
+        include_running: bool = False,
+    ) -> int:
+        """Fail stale queued work, and optionally stale running work during recovery."""
         from sqlalchemy import update
 
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=30)
+        statuses = ["pending", "running"] if include_running else ["pending"]
         result = await db.execute(
             update(Review)
-            .where(Review.status == "pending", Review.created_at < cutoff)
+            .where(Review.status.in_(statuses), Review.created_at < cutoff)
             .values(
                 status="failed",
-                summary="Review did not start before the worker stopped. Please retry.",
+                summary=case(
+                    (Review.status == "pending", "Review did not start before the worker stopped. Please retry."),
+                    else_="Review was interrupted when the worker stopped. Please retry.",
+                ),
                 completed_at=datetime.now(timezone.utc),
             )
         )
@@ -66,7 +85,7 @@ class ReviewService:
                     Review.id == review_id,
                     Review.repository_id == repository_id,
                     Review.user_id == user_id,
-                )
+                ).with_for_update()
             )
             review = review_result.scalar_one_or_none()
             if not review:
@@ -86,6 +105,9 @@ class ReviewService:
             self.db.add(review)
 
         await self.db.flush()
+        # Persist the claim before executing the graph. A duplicate background
+        # delivery then observes running and exits instead of executing twice.
+        await self.db.commit()
 
         start = time.time()
         try:
@@ -149,6 +171,16 @@ class ReviewService:
             workflow = ReviewWorkflow(progress_callback=progress_callback)
             result = await workflow.run(initial_state)
 
+            executed_agents = result.get("agents_to_run") or []
+            analysis_results = []
+            for name, result_key in ANALYSIS_RESULT_KEYS.items():
+                agent_result = result.get(result_key)
+                if name in executed_agents and isinstance(agent_result, dict):
+                    if any(key in agent_result for key in ("score", "architecture_score", "performance_score")):
+                        analysis_results.append(agent_result)
+            if not analysis_results:
+                raise RuntimeError("Review workflow completed without an analysis agent result")
+
             review.overall_score = result.get("overall_score")
             review.summary = result.get("summary")
             review.top_issues = result.get("top_issues")
@@ -203,9 +235,10 @@ class ReviewService:
             if result.get("overall_score") is not None:
                 repo.health_score = result["overall_score"]
 
-        except Exception as e:
+        except Exception:
             review.status = "failed"
-            review.summary = f"Review failed: {str(e)}"
+            review.summary = "Review failed. Check server logs for the underlying error."
+            review.completed_at = datetime.now(timezone.utc)
             raise
 
         await self.db.flush()
