@@ -146,7 +146,7 @@ class VectorStore:
                 "file_path": chunk.file_path,
                 "language": chunk.language,
                 "symbol_name": chunk.symbol_name,
-                "symbol_type": chunk.chunk_type,
+                "chunk_type": chunk.chunk_type,
                 "start_line": chunk.start_line,
                 "end_line": chunk.end_line,
                 "sha256": self._content_hash(content),
@@ -221,13 +221,14 @@ class VectorStore:
 
         start = time.perf_counter()
         with trace_span("qdrant.search", operation="search", repository_id=repository_id, limit=limit):
-            results = self.client.search(
+            response = self.client.query_points(
                 collection_name=self.settings.qdrant_collection,
-                query_vector=query_embedding,
+                query=query_embedding,
                 query_filter=qmodels.Filter(must=must_conditions),
                 limit=limit,
                 with_payload=True,
             )
+            results = response.points
         record_qdrant("search", int((time.perf_counter() - start) * 1000))
 
         return [
