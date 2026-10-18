@@ -9,7 +9,8 @@ Set these variables on the Render backend service. Values for credentials must b
 | `APP_ENV` | `production` |
 | `DEBUG` | `false` |
 | `JWT_SECRET` | Unique random secret, at least 32 characters |
-| `DATABASE_URL` | Render PostgreSQL URL using `postgresql+asyncpg://` |
+| `DATABASE_URL` | Neon connection string. The app accepts `postgres://`, `postgresql://`, or `postgresql+asyncpg://` and normalizes to SQLAlchemy asyncpg. Neon TLS is enforced. |
+| `DATABASE_CONNECT_TIMEOUT_SECONDS` | Asyncpg connect and SQLAlchemy pool checkout bound, default `20`, valid range `1`–`60` seconds |
 | `REDIS_URL` | Reachable Redis URL |
 | `QDRANT_URL` | Reachable Qdrant HTTPS endpoint |
 | `GITHUB_CLIENT_ID` | GitHub OAuth application client ID |
@@ -24,7 +25,9 @@ Set these variables on the Render backend service. Values for credentials must b
 
 Provider credentials are conditional: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, or `DEEPSEEK_API_KEY` for the matching `LLM_PROVIDER`; `OPENAI_API_KEY` or `VOYAGE_API_KEY` for the matching embedding provider. For an API deployment without paid OpenAI calls, use `LLM_PROVIDER=ollama`, `LLM_MODEL=llama3.3` (or a model available on your service), `OLLAMA_BASE_URL=https://<reachable-ollama-service>`, `EMBEDDING_PROVIDER=bge`, `EMBEDDING_MODEL=BAAI/bge-m3`, and `VECTOR_DIMENSION=1024`. The Ollama URL must be reachable from Render. BGE downloads its model at runtime and is not verified for Render's memory, disk, or network limits. Provision a Qdrant collection with the same 1024 dimension before indexing; an existing collection with another dimension will fail explicitly. No live provider configuration was tested in this audit.
 
-Useful optional variables include `HEALTH_CHECK_TIMEOUT_SECONDS` (default `2`), `QDRANT_API_KEY`, `CACHE_TTL_SECONDS`, `DATABASE_ECHO` (keep false), `LOG_LEVEL`, `LANGSMITH_API_KEY`, `LANGSMITH_TRACING`, `LANGSMITH_PROJECT`, `OTEL_EXPORTER_ENDPOINT`, and `OTEL_SERVICE_NAME`. Render supplies `PORT`; the Docker command uses it.
+Useful optional variables include `HEALTH_CHECK_TIMEOUT_SECONDS` (default `2`, used for readiness and Redis/Qdrant checks), `QDRANT_API_KEY`, `CACHE_TTL_SECONDS`, `DATABASE_ECHO` (keep false), `LOG_LEVEL`, `LANGSMITH_API_KEY`, `LANGSMITH_TRACING`, `LANGSMITH_PROJECT`, `OTEL_EXPORTER_ENDPOINT`, and `OTEL_SERVICE_NAME`. PostgreSQL startup gets a separate budget of `DATABASE_CONNECT_TIMEOUT_SECONDS + 5` seconds, and the asyncpg driver and SQLAlchemy pool have finite connect/checkout limits. PostgreSQL errors are logged by dependency and exception class only; connection strings are not logged. Render supplies `PORT`; the Docker command uses it.
+
+For Neon, use the dashboard's connection string and preferably select its pooled endpoint for this multi-connection web service. Both direct and pooled endpoint URLs are accepted; the topology currently configured on Render has not been inspected. Neon connection strings use TLS; common `sslmode=require` query parameters are translated to asyncpg's `ssl=require`, and Neon hostnames without an explicit TLS parameter are upgraded to `ssl=require`. Current asyncpg does not implement SCRAM channel binding, so a `channel_binding` parameter included in Neon URLs is removed during normalization; TLS remains required. If channel binding is a deployment requirement, use a driver that supports it. Do not choose direct versus pooled based only on this code: confirm the configured endpoint in Render/Neon and account for the app's per-process SQLAlchemy pool (`pool_size=10`, `max_overflow=20`) against direct endpoint connection limits. See [Neon connection pooling](https://neon.com/docs/connect/connection-pooling) and [Neon connection strings](https://neon.com/docs/connect/connect-from-any-app).
 
 ## Schema migration
 

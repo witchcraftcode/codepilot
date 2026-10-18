@@ -1,4 +1,5 @@
 from logging.config import fileConfig
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from alembic import context
 from sqlalchemy import engine_from_config, pool
@@ -11,7 +12,23 @@ config = context.config
 if config.config_file_name:
     fileConfig(config.config_file_name)
 
-database_url = get_settings().database_url.replace("postgresql+asyncpg://", "postgresql+psycopg://", 1)
+database_url = get_settings().database_url.replace(
+    "postgresql+asyncpg://", "postgresql+psycopg://", 1
+)
+parsed_url = urlsplit(database_url)
+migration_query = [
+    ("sslmode" if key == "ssl" else key, value)
+    for key, value in parse_qsl(parsed_url.query, keep_blank_values=True)
+]
+database_url = urlunsplit(
+    (
+        parsed_url.scheme,
+        parsed_url.netloc,
+        parsed_url.path,
+        urlencode(migration_query),
+        parsed_url.fragment,
+    )
+)
 config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
 target_metadata = Base.metadata
 

@@ -2,9 +2,9 @@ from functools import lru_cache
 from enum import Enum
 from pathlib import Path
 from typing import Literal
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class LLMProvider(str, Enum):
@@ -35,6 +35,12 @@ class Settings(BaseSettings):
         default="postgresql+asyncpg://postgres:postgres@localhost:5432/codepilot",
         alias="DATABASE_URL",
     )
+    database_connect_timeout_seconds: float = Field(
+        default=20.0,
+        alias="DATABASE_CONNECT_TIMEOUT_SECONDS",
+        ge=1,
+        le=60,
+    )
 
     database_echo: bool = Field(
         default=False,
@@ -46,6 +52,55 @@ class Settings(BaseSettings):
         gt=0,
         le=30,
     )
+
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def normalize_database_url(cls, value: object) -> str:
+        """Normalize standard PostgreSQL/Neon URLs for SQLAlchemy asyncpg."""
+        if not isinstance(value, str):
+            raise ValueError("DATABASE_URL must be a PostgreSQL URL")
+        try:
+            parsed = urlsplit(value)
+            scheme = parsed.scheme.casefold()
+            if scheme in {"postgres", "postgresql"}:
+                parsed = parsed._replace(scheme="postgresql+asyncpg")
+            elif scheme != "postgresql+asyncpg":
+                raise ValueError
+            if not parsed.hostname or not parsed.path.strip("/"):
+                raise ValueError
+            _ = parsed.port  # Force URL parser to validate any explicit port.
+
+            query = parse_qsl(parsed.query, keep_blank_values=True)
+            sslmode_values = [v for k, v in query if k == "sslmode"]
+            ssl_values = [v for k, v in query if k == "ssl"]
+            if len(sslmode_values) > 1 or len(ssl_values) > 1:
+                raise ValueError
+            if sslmode_values:
+                if ssl_values and ssl_values[0] != sslmode_values[0]:
+                    raise ValueError
+                query = [(k, v) for k, v in query if k != "sslmode"]
+                if not ssl_values:
+                    query.append(("ssl", sslmode_values[0]))
+
+            # asyncpg currently does not implement SCRAM channel binding or
+            # accept libpq's channel_binding option. Keep TLS enforced below;
+            # forwarding this copied Neon URL parameter causes driver errors.
+            query = [(k, v) for k, v in query if k != "channel_binding"]
+
+            is_neon = parsed.hostname.casefold().endswith(".neon.tech")
+            ssl_value = next((v.casefold() for k, v in query if k == "ssl"), None)
+            if is_neon and ssl_value not in {None, "require", "verify-ca", "verify-full"}:
+                raise ValueError
+            if is_neon and ssl_value is None:
+                query.append(("ssl", "require"))
+
+            return urlunsplit(
+                (parsed.scheme, parsed.netloc, parsed.path, urlencode(query), parsed.fragment)
+            )
+        except (ValueError, UnicodeError):
+            raise ValueError(
+                "DATABASE_URL must be a valid PostgreSQL URL compatible with asyncpg; Neon URLs must use TLS"
+            ) from None
 
     # Redis
     redis_url: str = Field(
@@ -82,6 +137,7 @@ class Settings(BaseSettings):
         env_file=Path(__file__).resolve().parents[1] / ".env",
         extra="ignore",
         populate_by_name=True,
+        hide_input_in_errors=True,
     )
 
     # API

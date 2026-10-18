@@ -5,17 +5,25 @@ from collections.abc import AsyncGenerator
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
-from app.config import get_settings
+from app.config import Settings, get_settings
 
 settings = get_settings()
 
-engine = create_async_engine(
-    settings.database_url,
-    echo=settings.database_echo,
-    pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=20,
-)
+
+def create_database_engine(settings: Settings):
+    """Build the async engine with finite driver-connect and pool-wait limits."""
+    return create_async_engine(
+        settings.database_url,
+        echo=settings.database_echo,
+        pool_pre_ping=True,
+        pool_size=10,
+        max_overflow=20,
+        pool_timeout=settings.database_connect_timeout_seconds,
+        connect_args={"timeout": settings.database_connect_timeout_seconds},
+    )
+
+
+engine = create_database_engine(settings)
 
 AsyncSessionLocal = async_sessionmaker(
     engine,
