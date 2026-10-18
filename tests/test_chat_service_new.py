@@ -1,4 +1,7 @@
 import asyncio
+from uuid import uuid4
+
+import pytest
 
 from app.services.chat_service import ChatService
 
@@ -12,9 +15,10 @@ class FakeRepo:
 class FakeDB:
     def __init__(self):
         self._conv = None
+        self._execute_count = 0
 
     async def execute(self, arg):
-        # For repository check
+        # First query is the ownership-filtered repository lookup.
         class Res:
             def __init__(self, obj):
                 self._obj = obj
@@ -22,7 +26,8 @@ class FakeDB:
             def scalar_one_or_none(self):
                 return self._obj
 
-        if arg == "repo-1":
+        self._execute_count += 1
+        if self._execute_count == 1:
             return Res(FakeRepo())
         # conversation select
         return Res(None)
@@ -79,3 +84,47 @@ async def run_chat():
 
 def test_chat():
     asyncio.run(run_chat())
+
+
+@pytest.mark.asyncio
+async def test_chat_rejects_repository_not_owned_by_user():
+    class MissingRepositoryDB:
+        async def execute(self, statement):
+            class Result:
+                def scalar_one_or_none(self):
+                    return None
+
+            return Result()
+
+    service = ChatService.__new__(ChatService)
+    service.db = MissingRepositoryDB()
+
+    with pytest.raises(LookupError, match="Repository not found"):
+        await service.chat(uuid4(), uuid4(), "private repository question")
+
+
+@pytest.mark.asyncio
+async def test_chat_rejects_conversation_from_another_user_or_repository():
+    class ConversationDB:
+        def __init__(self):
+            self.calls = 0
+
+        async def execute(self, statement):
+            self.calls += 1
+
+            class Result:
+                def __init__(self, value):
+                    self.value = value
+
+                def scalar_one_or_none(self):
+                    return self.value
+
+            if self.calls == 1:
+                return Result(FakeRepo())
+            return Result(None)
+
+    service = ChatService.__new__(ChatService)
+    service.db = ConversationDB()
+
+    with pytest.raises(LookupError, match="Conversation not found"):
+        await service.chat(uuid4(), uuid4(), "question", conversation_id=uuid4())

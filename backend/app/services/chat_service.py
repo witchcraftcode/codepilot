@@ -116,28 +116,29 @@ class ChatService:
         stream: bool = False,
     ) -> dict:
         # Validate repository availability
-        try:
-            repo_result = await self.db.execute(select(Repository).where(Repository.id == repository_id))
-            repo = repo_result.scalar_one_or_none()
-        except Exception:
-            res = await self.db.execute(repository_id)
-            repo = res.scalar_one_or_none()
-        if repo is None:
-            try:
-                res = await self.db.execute(repository_id)
-                repo = res.scalar_one_or_none()
-            except Exception:
-                pass
+        repo_result = await self.db.execute(
+            select(Repository).where(
+                Repository.id == repository_id,
+                Repository.owner_id == user_id,
+            )
+        )
+        repo = repo_result.scalar_one_or_none()
 
         if not repo or getattr(repo, "status", "ready") != "ready":
-            raise ValueError("Repository not ready for chat")
+            raise LookupError("Repository not found or not ready for chat")
 
         # Conversation handling
         if conversation_id:
-            conv_result = await self.db.execute(select(Conversation).where(Conversation.id == conversation_id))
+            conv_result = await self.db.execute(
+                select(Conversation).where(
+                    Conversation.id == conversation_id,
+                    Conversation.user_id == user_id,
+                    Conversation.repository_id == repository_id,
+                )
+            )
             conversation = conv_result.scalar_one_or_none()
             if not conversation:
-                raise ValueError("Conversation not found")
+                raise LookupError("Conversation not found")
         else:
             conversation = Conversation(repository_id=repository_id, user_id=user_id, title=message[:100])
             self.db.add(conversation)

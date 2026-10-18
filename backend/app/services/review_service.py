@@ -1,7 +1,7 @@
 """Review orchestration service."""
 
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from sqlalchemy import select
@@ -20,6 +20,23 @@ class ReviewService:
         self.db = db
         self.workflow = ReviewWorkflow()
 
+    @staticmethod
+    async def fail_abandoned_pending_reviews(db: AsyncSession) -> int:
+        """Fail old queued rows after restart; never guess about active running work."""
+        from sqlalchemy import update
+
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=30)
+        result = await db.execute(
+            update(Review)
+            .where(Review.status == "pending", Review.created_at < cutoff)
+            .values(
+                status="failed",
+                summary="Review did not start before the worker stopped. Please retry.",
+                completed_at=datetime.now(timezone.utc),
+            )
+        )
+        return result.rowcount or 0
+
     async def start_review(
         self,
         repository_id: UUID,
@@ -27,21 +44,47 @@ class ReviewService:
         review_type: str = "full",
         focus_areas: list[str] | None = None,
         custom_prompt: str | None = None,
+        review_id: UUID | None = None,
     ) -> Review:
-        repo_result = await self.db.execute(select(Repository).where(Repository.id == repository_id))
+        repo_result = await self.db.execute(
+            select(Repository).where(
+                Repository.id == repository_id,
+                Repository.owner_id == user_id,
+            )
+        )
         repo = repo_result.scalar_one_or_none()
         if not repo:
             raise ValueError("Repository not found")
         if repo.status != "ready":
-            raise ValueError(f"Repository not ready for review (status: {repo.status})")
+            raise ValueError(
+                f"Repository not ready for review (status: {repo.status})"
+            )
 
-        review = Review(
-            repository_id=repository_id,
-            user_id=user_id,
-            review_type=review_type,
-            status="running",
-        )
-        self.db.add(review)
+        if review_id is not None:
+            review_result = await self.db.execute(
+                select(Review).where(
+                    Review.id == review_id,
+                    Review.repository_id == repository_id,
+                    Review.user_id == user_id,
+                )
+            )
+            review = review_result.scalar_one_or_none()
+            if not review:
+                raise ValueError("Review not found for this user and repository")
+            # Background task delivery can be retried. Never execute an already
+            # claimed or terminal review twice (which would duplicate logs/reports).
+            if review.status != "pending":
+                return review
+            review.status = "running"
+        else:
+            review = Review(
+                repository_id=repository_id,
+                user_id=user_id,
+                review_type=review_type,
+                status="running",
+            )
+            self.db.add(review)
+
         await self.db.flush()
 
         start = time.time()
@@ -80,7 +123,9 @@ class ReviewService:
                 "errors": [],
             }
 
-            async def progress_callback(state: ReviewState, current_stage: str) -> None:
+            async def progress_callback(
+                state: ReviewState, current_stage: str
+            ) -> None:
                 progress_entry = {
                     "stage": current_stage,
                     "message": f"Completed stage: {current_stage}",
@@ -116,8 +161,14 @@ class ReviewService:
             review.completed_at = datetime.now(timezone.utc)
 
             agent_names = [
-                "repository", "architecture", "security", "performance",
-                "testing", "documentation", "style", "dependencies",
+                "repository",
+                "architecture",
+                "security",
+                "performance",
+                "testing",
+                "documentation",
+                "style",
+                "dependencies",
             ]
             report_data = {}
             for name in agent_names:
@@ -149,7 +200,7 @@ class ReviewService:
             )
             self.db.add(report)
 
-            if result.get("overall_score"):
+            if result.get("overall_score") is not None:
                 repo.health_score = result["overall_score"]
 
         except Exception as e:
@@ -159,6 +210,7 @@ class ReviewService:
 
         await self.db.flush()
         return review
+
 
     async def get_review(self, review_id: UUID) -> Review | None:
         result = await self.db.execute(select(Review).where(Review.id == review_id))

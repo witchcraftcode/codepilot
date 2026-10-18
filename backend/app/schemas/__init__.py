@@ -319,13 +319,13 @@ class FeedbackCreate(BaseModel):
 
 
 class HealthScoreBreakdown(BaseModel):
-    security: int
-    performance: int
-    architecture: int
-    documentation: int
-    testing: int
-    maintainability: int
-    overall: int
+    security: int | None = None
+    performance: int | None = None
+    architecture: int | None = None
+    documentation: int | None = None
+    testing: int | None = None
+    maintainability: int | None = None
+    overall: int | None = None
 
 
 class ScoresResponse(BaseModel):

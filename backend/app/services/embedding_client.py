@@ -28,14 +28,23 @@ def _content_hash(text: str) -> str:
 class EmbeddingClient:
     def __init__(self) -> None:
         self.settings = get_settings()
-        # embeddings object may be sync; create lazily to avoid import-time provider deps
-        try:
-            from app.services.embedding_factory import get_embeddings
+        # Provider initialization errors must surface; a missing model cannot be
+        # represented as a valid embedding without corrupting retrieval data.
+        from app.services.embedding_factory import get_embeddings
 
-            self._embeddings = get_embeddings()
-        except Exception:
-            # In unit tests or environments missing provider libs, fall back to None
-            self._embeddings = None
+        self._embeddings = get_embeddings()
+
+    def _validate_vectors(self, vectors: list[list[float]], expected_count: int) -> None:
+        if len(vectors) != expected_count:
+            raise ValueError(
+                f"Embedding provider returned {len(vectors)} vectors for {expected_count} inputs"
+            )
+        expected_dimension = self.settings.vector_dimension
+        if any(len(vector) != expected_dimension for vector in vectors):
+            actual_dimensions = sorted({len(vector) for vector in vectors})
+            raise ValueError(
+                f"Embedding dimension mismatch: configured {expected_dimension}, provider returned {actual_dimensions}"
+            )
 
     async def embed_batch(self, texts: List[str]) -> List[List[float]]:
         """Embed a list of texts, using cache for existing items and batching provider calls.
@@ -56,6 +65,7 @@ class EmbeddingClient:
         to_request: List[Tuple[int, str]] = []  # (index, text)
         for i, cached in enumerate(cached_results):
             if cached:
+                self._validate_vectors([cached], 1)
                 record_cache("embedding", True)
                 results[i] = cached
             else:
@@ -86,6 +96,7 @@ class EmbeddingClient:
                 try:
                     with trace_span("embedding.provider", provider=str(self.settings.embedding_provider.value), count=len(strs)):
                         provider_embeddings = await self._call_provider(list(strs))
+                    self._validate_vectors(provider_embeddings, len(strs))
                     latency = time.perf_counter() - start
                     record_embedding(str(self.settings.embedding_provider.value), "embed_batch", latency * 1000)
                     logger.info(
@@ -103,24 +114,24 @@ class EmbeddingClient:
                     break
                 except Exception as exc:  # pragma: no cover - network/provider errors
                     if attempt > max_retries:
-                        logger.exception("embedding_batch: exhausted retries for batch: %s", exc)
-                        # Fill with zero vectors to preserve ordering
-                        zero = [0.0] * getattr(self.settings, "vector_dimension", 1536)
-                        for idx in indices:
-                            results[idx] = zero
-                        break
+                        logger.error(
+                            "embedding_batch: provider failed after %d attempts",
+                            attempt,
+                        )
+                        raise RuntimeError(
+                            "Embedding provider failed after retries"
+                        ) from exc
                     backoff = backoff_base * (2 ** (attempt - 1)) + (random.random() * 0.1)
                     logger.warning(
-                        "embedding_batch: attempt %d failed, retrying in %.2fs: %s",
+                        "embedding_batch: provider attempt %d failed; retrying in %.2fs",
                         attempt,
                         backoff,
-                        exc,
                     )
                     await asyncio.sleep(backoff)
 
-        # At this point results should be fully populated
-        final = [r if r is not None else [0.0] * getattr(self.settings, "vector_dimension", 1536) for r in results]
-        return final
+        if any(result is None for result in results):
+            raise RuntimeError("Embedding batch completed without a result for every input")
+        return [result for result in results if result is not None]
 
     async def _call_provider(self, texts: List[str]) -> List[List[float]]:
         """Call the underlying embeddings provider. Runs sync providers in a threadpool.
@@ -128,17 +139,12 @@ class EmbeddingClient:
         Returns list of embedding vectors matching texts order.
         """
         if not self._embeddings:
-            # No provider in tests/environment: return zero vectors
-            return [[0.0] * self.settings.vector_dimension for _ in texts]
+            raise RuntimeError("Configured embedding provider is unavailable")
 
         # Many LangChain embedding classes expose async methods, but to be safe
         # call sync embed_documents in a threadpool.
         if hasattr(self._embeddings, "aembed_documents"):
-            try:
-                return await self._embeddings.aembed_documents(texts)
-            except Exception:
-                # fallback to sync
-                pass
+            return await self._embeddings.aembed_documents(texts)
 
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, lambda: self._embeddings.embed_documents(list(texts)))

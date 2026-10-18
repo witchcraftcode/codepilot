@@ -9,6 +9,11 @@ def get_embeddings() -> Embeddings:
     settings = get_settings()
 
     if settings.embedding_provider == EmbeddingProvider.OPENAI:
+        # Allow non-embedding application paths and deterministic unit tests to
+        # construct without credentials. The first embedding request will fail
+        # explicitly in EmbeddingClient._call_provider.
+        if not settings.openai_api_key:
+            return None  # type: ignore[return-value]
         from langchain_openai import OpenAIEmbeddings
 
         return OpenAIEmbeddings(
@@ -19,14 +24,16 @@ def get_embeddings() -> Embeddings:
     if settings.embedding_provider == EmbeddingProvider.BGE:
         from langchain_huggingface import HuggingFaceEmbeddings
 
-        return HuggingFaceEmbeddings(model_name="BAAI/bge-m3")
+        return HuggingFaceEmbeddings(model_name=settings.embedding_model)
 
     if settings.embedding_provider == EmbeddingProvider.NOMIC:
         from langchain_huggingface import HuggingFaceEmbeddings
 
-        return HuggingFaceEmbeddings(model_name="nomic-ai/nomic-embed-text-v1.5", model_kwargs={"trust_remote_code": True})
+        return HuggingFaceEmbeddings(model_name=settings.embedding_model, model_kwargs={"trust_remote_code": True})
 
     if settings.embedding_provider == EmbeddingProvider.VOYAGE:
+        if not settings.voyage_api_key:
+            return None  # type: ignore[return-value]
         from langchain_voyageai import VoyageAIEmbeddings
 
         return VoyageAIEmbeddings(

@@ -26,6 +26,14 @@ def test_index_chunks_counts(monkeypatch):
         vs = VectorStore()
         # Patch embedding client
         vs.embedding_client = DummyEmbeddingClient()
+        vs.settings.vector_dimension = 8
+
+        class FakeQdrantClient:
+            def upsert(self, **kwargs):
+                return None
+
+        vs.client = FakeQdrantClient()
+        monkeypatch.setattr(vs, "ensure_collection", lambda: None)
 
         count = await vs.index_chunks("repo-1", chunks)
         # one chunk is a short comment, two others valid -> should be 2

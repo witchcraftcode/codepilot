@@ -40,6 +40,23 @@ from app.services.review_service import ReviewService
 router = APIRouter(tags=["review"])
 
 
+async def _require_owned_repository(
+    db: AsyncSession,
+    repository_id: UUID,
+    user_id: UUID,
+) -> Repository:
+    result = await db.execute(
+        select(Repository).where(
+            Repository.id == repository_id,
+            Repository.owner_id == user_id,
+        )
+    )
+    repository = result.scalar_one_or_none()
+    if repository is None:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    return repository
+
+
 async def _run_review_background(
     review_id: UUID,
     repository_id: UUID,
@@ -72,7 +89,12 @@ async def _run_review_background(
         async with Session() as session:
             service = ReviewService(session)
             await service.start_review(
-                repository_id, user_id, review_type, focus, prompt
+                repository_id,
+                user_id,
+                review_type,
+                focus,
+                prompt,
+                review_id=review_id,
             )
             await session.commit()
 
@@ -109,6 +131,7 @@ async def create_review(
     db: Annotated[AsyncSession, Depends(get_db)],
     user: Annotated[User, Depends(get_current_user)],
 ):
+    await _require_owned_repository(db, body.repository_id, user.id)
     review = Review(
         repository_id=body.repository_id,
         user_id=user.id,
@@ -267,6 +290,7 @@ async def generate_tests(
     db: Annotated[AsyncSession, Depends(get_db)],
     user: Annotated[User, Depends(get_current_user)],
 ):
+    await _require_owned_repository(db, body.repository_id, user.id)
     from app.services.llm_factory import get_llm
     from vectorstore.qdrant_store import VectorStore
 
@@ -292,6 +316,7 @@ async def generate_documentation(
     db: Annotated[AsyncSession, Depends(get_db)],
     user: Annotated[User, Depends(get_current_user)],
 ):
+    await _require_owned_repository(db, body.repository_id, user.id)
     from app.services.llm_factory import get_llm
     from vectorstore.qdrant_store import VectorStore
 
@@ -316,6 +341,7 @@ async def explain_function(
     db: Annotated[AsyncSession, Depends(get_db)],
     user: Annotated[User, Depends(get_current_user)],
 ):
+    await _require_owned_repository(db, body.repository_id, user.id)
     from app.services.llm_factory import get_llm
     from vectorstore.qdrant_store import VectorStore
 
@@ -403,6 +429,7 @@ async def review_pull_request(
     from app.services.llm_factory import get_llm
     from langchain_core.messages import HumanMessage, SystemMessage
 
+    await _require_owned_repository(db, body.repository_id, user.id)
     llm = get_llm()
     response, _, _, _ = await measured_llm_ainvoke(llm, [
         SystemMessage(content="Review this pull request diff. Identify bugs, security issues, style problems, and suggest improvements."),

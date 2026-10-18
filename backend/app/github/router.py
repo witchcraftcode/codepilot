@@ -1,5 +1,14 @@
-from fastapi import APIRouter, HTTPException
+import logging
 
+import httpx
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.deps import get_current_user
+from app.database.session import get_db
+from app.models.repository import Repository
+from app.models.user import User
 from .comment_mapper import GitHubCommentMapper
 
 from .schemas import (
@@ -9,6 +18,7 @@ from .schemas import (
 from .services import GitHubService
 from .review_orchestrator import PullRequestReviewOrchestrator
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/github", tags=["GitHub"])
 
 
@@ -16,9 +26,36 @@ router = APIRouter(prefix="/github", tags=["GitHub"])
     "/pull-request",
     response_model=PullRequestReviewResponse,
 )
-async def review_pull_request(request: PullRequestReviewRequest):
+async def review_pull_request(
+    request: PullRequestReviewRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    repository_result = await db.execute(
+        select(Repository).where(
+            Repository.id == request.repository_id,
+            Repository.owner_id == user.id,
+        )
+    )
+    repository = repository_result.scalar_one_or_none()
+    if repository is None:
+        raise HTTPException(status_code=404, detail="Repository not found")
 
-    github = GitHubService(token=request.github_token)
+    requested_name = f"{request.owner}/{request.repo}".casefold()
+    if (repository.full_name or "").casefold() != requested_name:
+        raise HTTPException(
+            status_code=403,
+            detail="Pull request repository does not match the indexed repository",
+        )
+    if not user.access_token:
+        raise HTTPException(
+            status_code=403,
+            detail="Connect a GitHub account with pull-request write access",
+        )
+
+    # The legacy github_token body field remains accepted for compatibility,
+    # but is deliberately ignored. Credentials come from the authenticated user.
+    github = GitHubService(token=user.access_token)
 
     try:
         pr = await github.get_pull_request(
@@ -32,6 +69,14 @@ async def review_pull_request(request: PullRequestReviewRequest):
             request.repo,
             request.pull_number,
         )
+
+        if not isinstance(pr, dict) or not isinstance(pr.get("user"), dict):
+            raise ValueError("Malformed pull request response")
+        head = pr.get("head")
+        if not pr.get("title") or not pr["user"].get("login"):
+            raise ValueError("Malformed pull request response")
+        if not isinstance(head, dict) or not isinstance(head.get("sha"), str):
+            raise ValueError("Malformed pull request response")
 
         orchestrator = PullRequestReviewOrchestrator()
 
@@ -64,8 +109,21 @@ async def review_pull_request(request: PullRequestReviewRequest):
                 body="🤖 CodePilot AI Pull Request Review",
             )
 
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except httpx.HTTPStatusError as exc:
+        upstream_status = exc.response.status_code
+        if upstream_status in (403, 404, 429):
+            raise HTTPException(
+                status_code=upstream_status,
+                detail="GitHub rejected the pull-request operation; verify repository access and permissions",
+            ) from exc
+        logger.warning("GitHub pull-request review failed with upstream status %s", upstream_status)
+        raise HTTPException(status_code=502, detail="GitHub pull-request service failed") from exc
+    except (httpx.TimeoutException, httpx.NetworkError) as exc:
+        logger.warning("GitHub pull-request review could not reach GitHub")
+        raise HTTPException(status_code=502, detail="GitHub pull-request service is unavailable") from exc
+    except ValueError as exc:
+        logger.warning("GitHub returned an invalid pull-request response")
+        raise HTTPException(status_code=502, detail="GitHub returned an invalid response") from exc
 
     return PullRequestReviewResponse(
         title=pr["title"],

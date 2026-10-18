@@ -12,45 +12,22 @@ from parsers.chunker import CodeChunk
 
 logger = logging.getLogger(__name__)
 
-from qdrant_client import QdrantClient
-from app.config import get_settings
-
-settings = get_settings()
-
-client = QdrantClient(
-    url=settings.qdrant_url,
-    api_key=settings.qdrant_api_key,
-)
-
 class VectorStore:
     def __init__(self) -> None:
-        # Lazy import of qdrant to avoid import-time dependency during unit tests
-        try:
-            from qdrant_client import QdrantClient
-        except Exception:  # pragma: no cover - environment may not have qdrant
-            QdrantClient = None  # type: ignore
-
+        from qdrant_client import QdrantClient
         self.settings = get_settings()
-        self.client = (
-            QdrantClient(
-                url=self.settings.qdrant_url,
-                api_key=self.settings.qdrant_api_key,
-            )
-            if QdrantClient
-            else None
+        self.client = QdrantClient(
+            url=self.settings.qdrant_url,
+            api_key=self.settings.qdrant_api_key,
         )
-        # Use the new EmbeddingClient wrapper for batching, caching and retries
-        try:
-            from app.services.embedding_client import EmbeddingClient
+        from app.services.embedding_client import EmbeddingClient
 
-            self.embedding_client = EmbeddingClient()
-        except Exception:
-            self.embedding_client = None
+        self.embedding_client = EmbeddingClient()
 
 
     def ensure_collection(self) -> None:
         if not self.client:
-            return
+            raise RuntimeError("Qdrant client is unavailable")
 
         from qdrant_client.http import models as qmodels
         from qdrant_client.http.exceptions import ResponseHandlingException
@@ -62,9 +39,8 @@ class VectorStore:
                 c.name for c in self.client.get_collections().collections
             ]
         except ResponseHandlingException as exc:
-            logger.warning("Qdrant collection check failed: %s", exc)
-            self.client = None
-            return
+            logger.warning("Qdrant collection check failed")
+            raise RuntimeError("Could not inspect Qdrant collections") from exc
 
         if collection_name not in collections:
             self.client.create_collection(
@@ -77,6 +53,16 @@ class VectorStore:
 
         # Create any payload indexes required by repository filtering.
         collection_info = self.client.get_collection(collection_name)
+        vector_config = collection_info.config.params.vectors
+        configured_dimension = getattr(vector_config, "size", None)
+        if configured_dimension is None and isinstance(vector_config, dict):
+            configured_dimension = vector_config.get("size")
+        if configured_dimension is None:
+            raise RuntimeError("Qdrant collection uses an unsupported named-vector configuration")
+        if configured_dimension != self.settings.vector_dimension:
+            raise RuntimeError(
+                f"Qdrant collection dimension {configured_dimension} does not match configured dimension {self.settings.vector_dimension}"
+            )
         payload_schema = collection_info.payload_schema or {}
 
         required_indexes = {
@@ -107,6 +93,8 @@ class VectorStore:
         batches to reduce overhead.
         """
         self.ensure_collection()
+        if self.client is None:
+            raise RuntimeError("Qdrant client is unavailable")
 
         # Filter out very small chunks and prepare payloads
         items = []  # tuples of (chunk, content)
@@ -123,16 +111,18 @@ class VectorStore:
 
         # Obtain embeddings in batches via the EmbeddingClient
         start_ts = time.time()
-        embeddings = await (self.embedding_client.embed_batch(contents) if self.embedding_client else [[0.0] * self.settings.vector_dimension for _ in contents])
+        embeddings = await self.embedding_client.embed_batch(contents)
+        if len(embeddings) != len(items) or any(
+            len(embedding) != self.settings.vector_dimension
+            for embedding in embeddings
+        ):
+            raise RuntimeError("Embedding provider returned vectors incompatible with Qdrant")
         elapsed = time.time() - start_ts
         logger.info("embeddings_obtained: repository=%s provider=%s count=%d latency=%.3fs",
                     repository_id,
                     getattr(self.settings, "embedding_provider", None),
                     len(embeddings),
                     elapsed)
-
-        if not self.client:
-            return len(items)
 
         from qdrant_client.http import models as qmodels
 
@@ -187,14 +177,10 @@ class VectorStore:
     ) -> list[dict[str, Any]]:
         self.ensure_collection()
         # Reuse embedding client to get query embedding
-        if self.embedding_client:
-            embeddings = await self.embedding_client.embed_batch([query])
-            query_embedding = embeddings[0]
-        else:
-            query_embedding = [0.0] * self.settings.vector_dimension
-
-        if not self.client:
-            return []
+        if self.client is None:
+            raise RuntimeError("Qdrant client is unavailable")
+        embeddings = await self.embedding_client.embed_batch([query])
+        query_embedding = embeddings[0]
 
         from qdrant_client.http import models as qmodels
 

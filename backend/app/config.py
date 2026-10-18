@@ -1,8 +1,10 @@
 from functools import lru_cache
 from enum import Enum
 from pathlib import Path
+from typing import Literal
+from urllib.parse import urlsplit
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class LLMProvider(str, Enum):
@@ -22,7 +24,11 @@ class EmbeddingProvider(str, Enum):
 class Settings(BaseSettings):
     # App
     app_name: str = "CodePilot"
-    debug: bool = True
+    app_env: Literal["development", "test", "production"] = Field(
+        default="development",
+        alias="APP_ENV",
+    )
+    debug: bool = Field(default=True, alias="DEBUG")
 
     # Database
     database_url: str = Field(
@@ -33,6 +39,12 @@ class Settings(BaseSettings):
     database_echo: bool = Field(
         default=False,
         alias="DATABASE_ECHO",
+    )
+    health_check_timeout_seconds: float = Field(
+        default=2.0,
+        alias="HEALTH_CHECK_TIMEOUT_SECONDS",
+        gt=0,
+        le=30,
     )
 
     # Redis
@@ -145,6 +157,76 @@ class Settings(BaseSettings):
         default="codepilot-backend",
         alias="OTEL_SERVICE_NAME",
     )
+
+    @model_validator(mode="after")
+    def validate_production_configuration(self) -> "Settings":
+        if self.app_env != "production":
+            return self
+
+        if self.debug:
+            raise ValueError("DEBUG must be false when APP_ENV=production")
+        if (
+            len(self.jwt_secret) < 32
+            or self.jwt_secret == "codepilot-dev-secret"
+            or self.jwt_secret.lower() in {"changeme", "change-me", "secret"}
+        ):
+            raise ValueError("JWT_SECRET must be a unique secret of at least 32 characters")
+
+        for env_name, configured_url in (
+            ("DATABASE_URL", self.database_url),
+            ("REDIS_URL", self.redis_url),
+            ("QDRANT_URL", self.qdrant_url),
+        ):
+            host = urlsplit(configured_url).hostname
+            if not host or host.casefold() in {"localhost", "127.0.0.1", "::1"}:
+                raise ValueError(f"{env_name} must point to a configured production service")
+
+        if not self.github_client_id or not self.github_client_secret:
+            raise ValueError("GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET are required in production")
+        if urlsplit(self.github_redirect_uri).scheme != "https":
+            raise ValueError("GITHUB_REDIRECT_URI must use HTTPS in production")
+
+        provider_credentials = {
+            LLMProvider.OPENAI: ("OPENAI_API_KEY", self.openai_api_key),
+            LLMProvider.ANTHROPIC: ("ANTHROPIC_API_KEY", self.anthropic_api_key),
+            LLMProvider.GEMINI: ("GOOGLE_API_KEY", self.google_api_key),
+            LLMProvider.DEEPSEEK: ("DEEPSEEK_API_KEY", self.deepseek_api_key),
+        }
+        if self.llm_provider in provider_credentials:
+            name, value = provider_credentials[self.llm_provider]
+            if not value:
+                raise ValueError(f"{name} is required for the configured LLM_PROVIDER")
+        elif self.llm_provider == LLMProvider.OLLAMA:
+            host = urlsplit(self.ollama_base_url).hostname
+            if not host or host.casefold() in {"localhost", "127.0.0.1", "::1"}:
+                raise ValueError("OLLAMA_BASE_URL must point to a reachable production service")
+
+        if self.embedding_provider == EmbeddingProvider.OPENAI and not self.openai_api_key:
+            raise ValueError("OPENAI_API_KEY is required for the configured EMBEDDING_PROVIDER")
+        if self.embedding_provider == EmbeddingProvider.VOYAGE and not self.voyage_api_key:
+            raise ValueError("VOYAGE_API_KEY is required for the configured EMBEDDING_PROVIDER")
+
+        supported_embedding_models = {
+            (EmbeddingProvider.BGE, "BAAI/bge-m3"): 1024,
+            (EmbeddingProvider.NOMIC, "nomic-ai/nomic-embed-text-v1.5"): 768,
+            (EmbeddingProvider.OPENAI, "text-embedding-3-small"): 1536,
+            (EmbeddingProvider.OPENAI, "text-embedding-3-large"): 3072,
+            (EmbeddingProvider.OPENAI, "text-embedding-ada-002"): 1536,
+            (EmbeddingProvider.VOYAGE, "voyage-code-2"): 1536,
+        }
+        expected_dimension = supported_embedding_models.get(
+            (self.embedding_provider, self.embedding_model)
+        )
+        if expected_dimension is None:
+            raise ValueError(
+                "Unsupported embedding provider/model combination; use a supported model with a known vector dimension"
+            )
+        if self.vector_dimension != expected_dimension:
+            raise ValueError(
+                f"VECTOR_DIMENSION must be {expected_dimension} for the configured EMBEDDING_PROVIDER/model"
+            )
+
+        return self
 
 @lru_cache
 def get_settings() -> Settings:

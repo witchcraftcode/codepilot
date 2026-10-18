@@ -1,20 +1,21 @@
 """CodePilot AI - FastAPI application entry point."""
 
 import logging
+import time
+import asyncio
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from uuid import uuid4
 
-import time
-
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 
-from app.github.router import router as github_router
 from app.api.routes import auth, chat, repository, review
 from app.api.routes.evaluation import router as evaluation_router
 from app.config import get_settings
-from app.database.session import Base, engine
+from app.database.session import AsyncSessionLocal, engine
+from app.github.router import router as github_router
 from app.logging_config import REQUEST_ID_HEADER, configure_logging, request_id_ctx
 from app.services.cache import cache_service
 from app.services.observability import (
@@ -25,9 +26,34 @@ from app.services.observability import (
     system_metrics,
     trace_span,
 )
-from app.services.startup import run_startup_checks
+from app.services.startup import (
+    check_postgres_connection,
+    check_qdrant_connection,
+    check_redis_connection,
+    run_startup_checks,
+)
+from app.services.review_service import ReviewService
 
 logger = logging.getLogger("codepilot.app")
+
+
+def _request_route_label(request: Request) -> str:
+    """Return the matched route template, never a caller supplied identifier."""
+    route = request.scope.get("route")
+    template = getattr(route, "path", None)
+    return template if isinstance(template, str) else "<unmatched>"
+
+
+async def _dependencies_ready(
+    checks: list[tuple[str, Callable[[], Awaitable[None]]]], timeout_seconds: float
+) -> bool:
+    for dependency, check in checks:
+        try:
+            await asyncio.wait_for(check(), timeout=timeout_seconds)
+        except Exception:
+            logger.warning("readiness.check_failed dependency=%s", dependency)
+            return False
+    return True
 
 
 @asynccontextmanager
@@ -37,8 +63,12 @@ async def lifespan(app: FastAPI):
     logger.info("application.startup")
 
     await run_startup_checks()
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    # Schema lifecycle is managed by Alembic before the service is deployed.
+    async with AsyncSessionLocal() as session:
+        stale_count = await ReviewService.fail_abandoned_pending_reviews(session)
+        if stale_count:
+            await session.commit()
+            logger.warning("review.stale_pending_failed count=%d", stale_count)
 
     yield
 
@@ -68,16 +98,20 @@ def create_app() -> FastAPI:
     async def add_request_id_and_observability(request: Request, call_next):
         request_id = request.headers.get(REQUEST_ID_HEADER) or uuid4().hex
         request_id_ctx.set(request_id)
-        route_path = request.url.path
         start = time.perf_counter()
         status_code = 500
         try:
-            with trace_span("api.request", method=request.method, path=route_path, request_id=request_id):
+            with trace_span("api.request", method=request.method, request_id=request_id):
                 response = await call_next(request)
                 status_code = response.status_code
         finally:
             duration_ms = int((time.perf_counter() - start) * 1000)
-            record_http_request(request.method, route_path, status_code, duration_ms)
+            record_http_request(
+                request.method,
+                _request_route_label(request),
+                status_code,
+                duration_ms,
+            )
         response.headers[REQUEST_ID_HEADER] = request_id
         return response
 
@@ -100,7 +134,21 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     async def health():
+        """Liveness: process and event loop are responding."""
         return {"status": "ok"}
+
+    @app.get("/ready")
+    async def ready():
+        """Readiness: verify required backing services with bounded checks."""
+        checks = [
+            ("postgres", check_postgres_connection),
+            ("redis", check_redis_connection),
+            ("qdrant", check_qdrant_connection),
+        ]
+        timeout = settings.health_check_timeout_seconds
+        if not await _dependencies_ready(checks, timeout):
+            return JSONResponse(status_code=503, content={"status": "not_ready"})
+        return {"status": "ready"}
 
     @app.get("/analytics/system")
     async def analytics_system():
